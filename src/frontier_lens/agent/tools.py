@@ -5,15 +5,15 @@ import json
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
-from frontier_lens.generate import _store_candidate
+from frontier_lens.generate import _store_candidate, estimate_pass_rate
 from frontier_lens.sandbox import execute
 
-TOOLS = [
+BASE_TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "get_cell_failures",
-            "description": "Failed selection items in a cell",
+            "description": "Failed train items in a cell. Do not call on the eval split.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -76,9 +76,62 @@ TOOLS = [
     },
 ]
 
+ESTIMATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "estimate_pass_rate",
+        "description": (
+            "Sample the policy k=8 on this candidate and return pass_rate. "
+            "Aim for the learnable band 0 < pass_rate < 1. Training split only."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stem": {"type": "string"},
+                "lang": {"type": "string"},
+                "code": {"type": "string"},
+                "input_files": {"type": "object"},
+                "numeric": {"type": "boolean"},
+            },
+            "required": ["stem", "lang", "code"],
+        },
+    },
+}
 
-def handle(name: str, args: dict, *, gen_id: str, fail_model: str) -> str:
+# Backward-compatible default is the train toolset.
+TOOLS = BASE_TOOLS + [ESTIMATE_TOOL]
+
+
+def tools_for(rl_split: str) -> list[dict]:
+    if rl_split == "eval":
+        blocked = {"get_cell_failures", "estimate_pass_rate"}
+        return [t for t in BASE_TOOLS if t["function"]["name"] not in blocked]
+    return BASE_TOOLS + [ESTIMATE_TOOL]
+
+
+def handle(
+    name: str,
+    args: dict,
+    *,
+    gen_id: str,
+    fail_model: str,
+    rl_split: str = "train",
+) -> str:
+    if name == "estimate_pass_rate":
+        if rl_split != "train":
+            return json.dumps({"error": "eval split must not call the policy"})
+        result = execute(
+            args["lang"], args["code"], args.get("input_files") or {}, twice=True
+        )
+        if not result.ok:
+            return json.dumps({"ok": False, "reason": result.reason})
+        stats = estimate_pass_rate(
+            args["stem"], result.stdout, bool(args.get("numeric", True))
+        )
+        return json.dumps({"ok": True, "key": result.stdout, **stats})
     if name == "get_cell_failures":
+        if rl_split != "train":
+            return json.dumps({"error": "eval split must not use policy failures"})
         engine = get_engine()
         with engine.connect() as conn:
             rows = conn.execute(
@@ -106,7 +159,9 @@ def handle(name: str, args: dict, *, gen_id: str, fail_model: str) -> str:
         stem = set((args.get("stem") or "").lower().split())
         engine = get_engine()
         with engine.connect() as conn:
-            rows = conn.execute(text("SELECT id, stem FROM questions WHERE source='seed' LIMIT 200")).mappings().all()
+            rows = conn.execute(
+                text("SELECT id, stem FROM questions WHERE source='seed' LIMIT 200")
+            ).mappings().all()
         scored = []
         for r in rows:
             toks = set(r["stem"].lower().split())
@@ -124,7 +179,9 @@ def handle(name: str, args: dict, *, gen_id: str, fail_model: str) -> str:
             args["band"],
             gen_id,
             "agent",
-            [fail_model],
+            [fail_model] if rl_split == "train" else [],
+            rl_split=rl_split,
+            calibrate=rl_split == "train",
         )
         return json.dumps({"candidate_id": cid})
     return json.dumps({"error": f"unknown tool {name}"})

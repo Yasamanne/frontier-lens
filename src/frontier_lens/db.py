@@ -77,7 +77,21 @@ CREATE TABLE IF NOT EXISTS candidates (
     generator_model TEXT,
     generator_mode TEXT,
     source_fail_ids TEXT,
-    created_at TEXT
+    created_at TEXT,
+    policy_pass_rate REAL,
+    pass_at_k REAL,
+    rl_split TEXT,
+    audit_batch_id TEXT
+);
+CREATE TABLE IF NOT EXISTS audit_batches (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    defects INTEGER NOT NULL,
+    defect_lo REAL NOT NULL,
+    defect_hi REAL NOT NULL,
+    accepted INTEGER NOT NULL,
+    threshold REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,4 +139,23 @@ def get_engine() -> Engine:
                 stmt = stmt.strip()
                 if stmt:
                     conn.execute(text(stmt))
+            _migrate(conn)
     return _engine
+
+
+def _migrate(conn) -> None:
+    extras = {
+        "candidates": [
+            ("policy_pass_rate", "REAL"),
+            ("pass_at_k", "REAL"),
+            ("rl_split", "TEXT"),
+            ("audit_batch_id", "TEXT"),
+        ],
+        "reviews": [("kind", "TEXT")],
+        "questions": [("reward_fn", "TEXT")],
+    }
+    for table, cols in extras.items():
+        existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+        for name, typ in cols:
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))
