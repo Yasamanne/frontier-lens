@@ -42,7 +42,11 @@ def run_contest(
         qrows = [q for q in qrows if q["level"] in levels]
         if not qrows:
             raise RuntimeError("no questions; run python -m frontier_lens.seed")
-        ids = [m for m in (model_ids or list(specs)) if specs.get(m) and specs[m].role == "evaluated"]
+        ids = [
+            m
+            for m in (model_ids or list(specs))
+            if specs.get(m) and specs[m].role in {"policy", "reference"}
+        ]
         if not ids:
             raise RuntimeError("no evaluated models selected")
         run_id = uuid.uuid4().hex[:12]

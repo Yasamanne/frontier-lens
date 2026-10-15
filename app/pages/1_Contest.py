@@ -24,7 +24,7 @@ except Exception:
 st.sidebar.write("Ollama", "ok" if ollama_ok else "down")
 
 specs = load_yaml()
-eval_ids = [m.id for m in specs if m.role == "evaluated"]
+eval_ids = [m.id for m in specs if m.role in {"policy", "reference"}]
 chosen = st.multiselect("Models", eval_ids, default=eval_ids[:1])
 levels = st.multiselect("Levels", [1, 2, 3], default=[1, 2, 3])
 k = st.number_input("k samples", 1, 5, 3)

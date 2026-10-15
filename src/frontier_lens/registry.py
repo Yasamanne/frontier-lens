@@ -26,8 +26,10 @@ class ModelSpec:
 def load_yaml() -> list[ModelSpec]:
     raw = yaml.safe_load(MODELS_YAML.read_text())
     specs = []
-    evaluated_families = set()
-    generator_families = set()
+    policy_families: set[str] = set()
+    reference_families: set[str] = set()
+    generator_families: set[str] = set()
+    allowed = {"policy", "reference", "generator"}
     for row in raw:
         if not row.get("license"):
             raise ValueError(f"{row.get('id')} missing license")
@@ -43,17 +45,32 @@ def load_yaml() -> list[ModelSpec]:
             license=row["license"],
             api_key_env=row.get("api_key_env"),
         )
-        if spec.role == "evaluated":
-            evaluated_families.add(spec.family)
-        elif spec.role == "generator":
-            generator_families.add(spec.family)
-        else:
+        if spec.role not in allowed:
             raise ValueError(f"bad role {spec.role}")
+        if spec.role == "policy":
+            policy_families.add(spec.family)
+        elif spec.role == "reference":
+            reference_families.add(spec.family)
+        else:
+            generator_families.add(spec.family)
         specs.append(spec)
-    overlap = evaluated_families & generator_families
+    if not policy_families:
+        raise ValueError("models.yaml needs a role: policy entry")
+    overlap = generator_families & (policy_families | reference_families)
     if overlap:
-        raise ValueError(f"family used as both evaluated and generator: {overlap}")
+        raise ValueError(
+            f"generator family overlaps policy or reference: {overlap}"
+        )
     return specs
+
+
+def policy_spec() -> ModelSpec:
+    specs = load_yaml()
+    return next(s for s in specs if s.role == "policy")
+
+
+def contest_specs() -> list[ModelSpec]:
+    return [s for s in load_yaml() if s.role in {"policy", "reference"}]
 
 
 def sync_models() -> list[ModelSpec]:

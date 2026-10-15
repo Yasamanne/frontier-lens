@@ -1,6 +1,17 @@
 # Open-weight only. Verify tags at runtime. No closed-source models.
+# Policy is the model we generate tasks for. References are comparison models.
+# Generator family must differ from policy and reference families.
+- id: gemma4-e4b
+  role: policy
+  family: gemma
+  provider: openai_compatible
+  base_url: http://localhost:11434/v1
+  model: gemma4:e4b
+  quant: q4_K_M
+  thinking: false
+  license: Gemma Terms of Use (check model card)
 - id: gemma4-12b
-  role: evaluated
+  role: reference
   family: gemma
   provider: openai_compatible
   base_url: http://localhost:11434/v1
@@ -9,7 +20,7 @@
   thinking: false
   license: Gemma Terms of Use (check model card)
 - id: qwen3.8-27b
-  role: evaluated
+  role: reference
   family: qwen
   provider: openai_compatible
   base_url: http://localhost:11434/v1
@@ -18,7 +29,7 @@
   thinking: false
   license: Apache-2.0
 - id: deepseek-v4.1-flash
-  role: evaluated
+  role: reference
   family: deepseek
   provider: openai_compatible
   base_url: https://openrouter.ai/api/v1
@@ -28,7 +39,7 @@
   thinking: false
   license: MIT
 - id: llama-4-scout
-  role: evaluated
+  role: reference
   family: llama
   provider: openai_compatible
   base_url: https://openrouter.ai/api/v1
