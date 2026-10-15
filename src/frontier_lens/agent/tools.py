@@ -86,7 +86,7 @@ def handle(name: str, args: dict, *, gen_id: str, fail_model: str) -> str:
                     """
                     SELECT q.stem, AVG(a.is_correct) acc FROM attempts a
                     JOIN questions q ON q.id=a.question_id
-                    WHERE a.run_id=:r AND a.model_id=:m AND q.topic=:t AND q.band=:b AND q.split='selection'
+                    WHERE a.run_id=:r AND a.model_id=:m AND q.topic=:t AND q.band=:b AND q.split='train'
                     GROUP BY q.id HAVING acc < 0.67
                     LIMIT 8
                     """

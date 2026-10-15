@@ -22,7 +22,7 @@ def new_vs_baseline(run_id: str, model_id: str, topic: str, band: str) -> dict:
             ),
             {"r": run_id, "m": model_id, "t": topic, "b": band},
         ).mappings().all()
-    base = [r["acc"] for r in rows if r["split"] == "baseline"]
+    base = [r["acc"] for r in rows if r["split"] == "train" and r["source"] == "seed"]
     new = [r["acc"] for r in rows if r["source"] == "generated"]
     def pack(vals):
         n = len(vals)

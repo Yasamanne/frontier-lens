@@ -8,7 +8,7 @@ from frontier_lens.db import get_engine
 from frontier_lens.stats import cell_stats
 
 
-def load_cell_rows(run_id: str, split: str = "selection"):
+def load_cell_rows(run_id: str, split: str = "train"):
     engine = get_engine()
     with engine.connect() as conn:
         rows = conn.execute(
@@ -25,7 +25,7 @@ def load_cell_rows(run_id: str, split: str = "selection"):
     return list(rows)
 
 
-def heatmap(run_id: str, model_id: str, split: str = "selection") -> list:
+def heatmap(run_id: str, model_id: str, split: str = "train") -> list:
     rows = [r for r in load_cell_rows(run_id, split) if r["model_id"] == model_id]
     by_item: dict[tuple[str, str, str], list[bool]] = defaultdict(list)
     for r in rows:
@@ -47,7 +47,7 @@ def heatmap(run_id: str, model_id: str, split: str = "selection") -> list:
 
 
 def print_heatmap(run_id: str, model_id: str) -> None:
-    print(f"run={run_id} model={model_id} split=selection")
+    print(f"run={run_id} model={model_id} split=train")
     print(f"{'topic':<24} {'band':<10} {'n':>3} {'acc':>6} {'ci':>18} {'stab':>6} weak")
     for c in heatmap(run_id, model_id):
         ci = f"[{c.lo:.2f},{c.hi:.2f}]"

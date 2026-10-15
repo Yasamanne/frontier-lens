@@ -1,34 +1,21 @@
 from __future__ import annotations
 
 import json
-import random
-from collections import defaultdict
 
 from sqlalchemy import text
 
-from frontier_lens.config import SPLIT_RNG_SEED
 from frontier_lens.db import get_engine
 from frontier_lens.ids import item_id
 from frontier_lens.sandbox import execute
+from frontier_lens.split import leakage, rl_split
 from frontier_lens.templates import all_specs
 
 
 def assign_splits(specs) -> list[tuple]:
-    rng = random.Random(SPLIT_RNG_SEED)
-    grouped: dict[tuple[str, int], list] = defaultdict(list)
-    for spec in specs:
-        grouped[(spec.topic, spec.level)].append(spec)
-    out = []
-    for (topic, level), bucket in grouped.items():
-        if level == 1:
-            for spec in bucket:
-                out.append((spec, "harness"))
-            continue
-        order = list(bucket)
-        rng.shuffle(order)
-        for i, spec in enumerate(order):
-            split = "selection" if i < 6 else "baseline"
-            out.append((spec, split))
+    out = [(spec, rl_split(spec.template, spec.level)) for spec in specs]
+    leaked = leakage([(spec.template, split) for spec, split in out])
+    if leaked:
+        raise RuntimeError(f"template leakage across train/eval: {leaked}")
     return out
 
 

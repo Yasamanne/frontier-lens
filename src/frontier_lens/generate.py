@@ -33,7 +33,7 @@ def _failures(run_id: str, model_id: str, topic: str, band: str, limit: int = 6)
                 """
                 SELECT q.stem, q.id, AVG(a.is_correct) as acc
                 FROM attempts a JOIN questions q ON q.id=a.question_id
-                WHERE a.run_id=:r AND a.model_id=:m AND q.topic=:t AND q.band=:b AND q.split='selection'
+                WHERE a.run_id=:r AND a.model_id=:m AND q.topic=:t AND q.band=:b AND q.split='train'
                 GROUP BY q.id
                 HAVING acc < 0.5
                 LIMIT :n

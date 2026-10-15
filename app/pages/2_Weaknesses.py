@@ -36,4 +36,4 @@ st.dataframe(
     ],
     use_container_width=True,
 )
-st.caption("Grey/not weak if CI overlaps overall mean. Split=selection.")
+st.caption("Grey/not weak if CI overlaps overall mean. Split=train templates.")
