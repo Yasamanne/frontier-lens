@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from frontier_lens.config import POLICY_K, REFERENCE_K
 from frontier_lens.db import get_engine
 from frontier_lens.ids import item_set_hash
 from frontier_lens.parse import parse_final
@@ -14,6 +15,14 @@ from frontier_lens.providers.fixture import FixtureProvider
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import ModelSpec, sync_models
 from frontier_lens.scoring import is_correct
+
+
+def samples_for(spec: ModelSpec, k_override: int | None = None) -> int:
+    if k_override is not None:
+        return k_override
+    if spec.role == "policy":
+        return POLICY_K
+    return REFERENCE_K
 
 
 def _questions(conn, levels: list[int]):
@@ -27,7 +36,7 @@ def _questions(conn, levels: list[int]):
 
 def run_contest(
     model_ids: list[str] | None,
-    k: int = 3,
+    k: int | None = None,
     levels: list[int] | None = None,
     replay: bool = False,
     write_fixtures: bool = False,
@@ -61,7 +70,7 @@ def run_contest(
                 "id": run_id,
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "h": item_set_hash([q["id"] for q in qrows]),
-                "k": k,
+                "k": max(POLICY_K, REFERENCE_K) if k is None else k,
                 "notes": "replay" if replay else "live",
             },
         )
@@ -72,8 +81,9 @@ def run_contest(
         for mid in ids:
             spec: ModelSpec = specs[mid]
             provider = None if replay else OpenAICompatibleProvider(spec.base_url or "", spec.api_key_env)
+            n_samples = samples_for(spec, k)
             for q in qrows:
-                for sample in range(1, k + 1):
+                for sample in range(1, n_samples + 1):
                     with engine.begin() as conn:
                         exists = conn.execute(
                             text(
@@ -165,7 +175,7 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--live", action="store_true")
     p.add_argument("--replay", action="store_true")
-    p.add_argument("--k", type=int, default=3)
+    p.add_argument("--k", type=int, default=None, help="override samples; default policy=8, reference=3")
     p.add_argument("--models", nargs="*", default=None)
     p.add_argument("--levels", nargs="*", type=int, default=[1, 2, 3])
     p.add_argument("--write-fixtures", action="store_true")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from frontier_lens.config import LEARNABLE_HI, LEARNABLE_LO
+
 
 def wilson_interval(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
     if n <= 0:
@@ -25,6 +27,30 @@ class CellStats:
     hi: float
     stability: float
     weak: bool
+
+
+def pass_rate(correct: int, n: int) -> float:
+    if n <= 0:
+        return 0.0
+    return correct / n
+
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """Unbiased pass@k: 1 - C(n-c, k)/C(n, k)."""
+    if k <= 0 or n <= 0:
+        return 0.0
+    if n - c < k:
+        return 1.0
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
+
+
+def in_learnable_band(rate: float) -> bool:
+    return LEARNABLE_LO < rate < LEARNABLE_HI
+
+
+def headroom(n: int, c: int, k: int) -> float:
+    """pass@k minus pass@1 for the policy (pass@1 == pass_rate)."""
+    return pass_at_k(n, c, k) - pass_at_k(n, c, 1)
 
 
 def majority_correct(sample_correct: list[bool]) -> bool:
