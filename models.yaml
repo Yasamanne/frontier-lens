@@ -1,0 +1,49 @@
+# Open-weight only. Verify tags at runtime. No closed-source models.
+- id: gemma4-12b
+  role: evaluated
+  family: gemma
+  provider: openai_compatible
+  base_url: http://localhost:11434/v1
+  model: gemma4:12b
+  quant: q4_K_M
+  thinking: false
+  license: Gemma Terms of Use (check model card)
+- id: qwen3.8-27b
+  role: evaluated
+  family: qwen
+  provider: openai_compatible
+  base_url: http://localhost:11434/v1
+  model: qwen3.8:27b
+  quant: q4_K_M
+  thinking: false
+  license: Apache-2.0
+- id: deepseek-v4.1-flash
+  role: evaluated
+  family: deepseek
+  provider: openai_compatible
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: deepseek/deepseek-v4.1-flash
+  quant: host
+  thinking: false
+  license: MIT
+- id: llama-4-scout
+  role: evaluated
+  family: llama
+  provider: openai_compatible
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: meta-llama/llama-4-scout
+  quant: host
+  thinking: false
+  license: Llama 4 Community License
+- id: glm-5.3
+  role: generator
+  family: glm
+  provider: openai_compatible
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: z-ai/glm-5.3
+  quant: host
+  thinking: false
+  license: check model card
