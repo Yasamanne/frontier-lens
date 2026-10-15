@@ -5,7 +5,7 @@ from collections import defaultdict
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
-from frontier_lens.stats import wilson_interval
+from frontier_lens.stats import headroom, in_learnable_band, pass_at_k, pass_rate, wilson_interval
 
 
 def new_vs_baseline(run_id: str, model_id: str, topic: str, band: str) -> dict:
@@ -48,3 +48,109 @@ def junk_by_mode() -> dict:
     for r in rows:
         out[r["generator_mode"] or "unknown"].append(dict(r))
     return dict(out)
+
+
+def policy_item_rates(run_id: str, model_id: str, split: str | None = "train") -> list[dict]:
+    engine = get_engine()
+    with engine.connect() as conn:
+        sql = """
+            SELECT q.id, q.template, q.source, q.generator_mode, q.split, a.is_correct
+            FROM attempts a JOIN questions q ON q.id=a.question_id
+            WHERE a.run_id=:r AND a.model_id=:m
+        """
+        params: dict = {"r": run_id, "m": model_id}
+        if split:
+            sql += " AND q.split=:split"
+            params["split"] = split
+        rows = conn.execute(text(sql), params).mappings().all()
+    by: dict[str, dict] = {}
+    for r in rows:
+        slot = by.setdefault(
+            r["id"],
+            {
+                "id": r["id"],
+                "template": r["template"],
+                "source": r["source"],
+                "generator_mode": r["generator_mode"] or "seed",
+                "split": r["split"],
+                "correct": 0,
+                "n": 0,
+            },
+        )
+        slot["n"] += 1
+        slot["correct"] += int(r["is_correct"])
+    out = []
+    for slot in by.values():
+        n, c = slot["n"], slot["correct"]
+        rate = pass_rate(c, n)
+        out.append(
+            {
+                **slot,
+                "pass_rate": rate,
+                "pass_at_k": pass_at_k(n, c, n),
+                "headroom": headroom(n, c, n),
+                "in_band": in_learnable_band(rate),
+            }
+        )
+    return out
+
+
+def band_share(items: list[dict]) -> dict:
+    n = len(items)
+    hits = sum(1 for i in items if i["in_band"])
+    by_template: dict[str, list[bool]] = defaultdict(list)
+    by_mode: dict[str, list[bool]] = defaultdict(list)
+    for i in items:
+        by_template[i["template"]].append(i["in_band"])
+        by_mode[i["generator_mode"]].append(i["in_band"])
+
+    def pack(flags: list[bool]) -> dict:
+        m = len(flags)
+        return {"n": m, "share": (sum(flags) / m if m else 0.0)}
+
+    return {
+        "n": n,
+        "share": (hits / n if n else 0.0),
+        "mean_headroom": (sum(i["headroom"] for i in items) / n if n else 0.0),
+        "by_template": {k: pack(v) for k, v in sorted(by_template.items())},
+        "by_mode": {k: pack(v) for k, v in sorted(by_mode.items())},
+    }
+
+
+def latest_audit() -> dict | None:
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT * FROM audit_batches ORDER BY created_at DESC LIMIT 1")
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def candidate_band_by_mode() -> dict:
+    """Headline generator metric: share of pending/approved items in the learnable band."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT generator_mode, policy_pass_rate, status, auto_reject_reason
+                FROM candidates WHERE rl_split='train' OR rl_split IS NULL
+                """
+            )
+        ).mappings().all()
+    by: dict[str, dict] = defaultdict(lambda: {"n": 0, "in_band": 0, "out_of_band": 0})
+    for r in rows:
+        mode = r["generator_mode"] or "unknown"
+        by[mode]["n"] += 1
+        rate = r["policy_pass_rate"]
+        if rate is not None and in_learnable_band(rate):
+            by[mode]["in_band"] += 1
+        if r["auto_reject_reason"] == "out_of_band":
+            by[mode]["out_of_band"] += 1
+    out = {}
+    for mode, d in by.items():
+        out[mode] = {
+            **d,
+            "share": d["in_band"] / d["n"] if d["n"] else 0.0,
+        }
+    return out

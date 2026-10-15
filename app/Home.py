@@ -8,17 +8,19 @@ import streamlit as st
 st.set_page_config(page_title="Frontier Lens", layout="wide")
 st.title("Frontier Lens")
 st.write(
-    "Execution-verified eval for open-weight models. "
-    "Keys come from running snippets. Models must predict `FINAL: <answer>` without tools."
+    "A small RL data engine for open-weight models. "
+    "It generates verifiable tasks at the policy's edge, hardens exact-match reward, "
+    "audits quality with humans, and keeps a clean held-out eval. "
+    "Claim: **RL-ready**, not RL-proven, unless a training run is on the Results page."
 )
 st.markdown(
     """
 **Pages**
 
-1. Contest — run or replay an eval  
-2. Weaknesses — heatmap with n and CIs  
-3. Generate + Review — one-shot / agent + blind SME  
-4. Results — new vs baseline and junk rates  
+1. Contest — sample the policy (k=8) and references (k=3)
+2. Weaknesses — policy pass-rate histogram plus heatmap
+3. Generate + Review — calibrate to the learnable band; audit sample + suspicious queue
+4. Results — band share, headroom, audit CI, one-shot vs agent
 
 Seed first: `uv run python -m frontier_lens.seed`
 """

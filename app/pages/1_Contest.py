@@ -27,7 +27,8 @@ specs = load_yaml()
 eval_ids = [m.id for m in specs if m.role in {"policy", "reference"}]
 chosen = st.multiselect("Models", eval_ids, default=eval_ids[:1])
 levels = st.multiselect("Levels", [1, 2, 3], default=[1, 2, 3])
-k = st.number_input("k samples", 1, 5, 3)
+override = st.checkbox("Override k (default: policy=8, reference=3)")
+k = st.number_input("k samples", 1, 8, 8) if override else None
 mode = st.radio("Mode", ["replay", "live"])
 if role == "Viewer":
     st.info("Viewer: replay only.")
@@ -39,13 +40,13 @@ if st.button("Evaluate") and chosen:
         "-m",
         "frontier_lens.contest",
         f"--{mode}",
-        "--k",
-        str(k),
         "--models",
         *chosen,
         "--levels",
         *[str(lv) for lv in levels],
     ]
+    if k is not None:
+        cmd[4:4] = ["--k", str(k)]
     st.write("Running:", " ".join(cmd))
     proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     st.session_state["contest_proc"] = proc.pid
