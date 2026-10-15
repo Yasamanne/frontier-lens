@@ -1,0 +1,14 @@
+.venv/
+.env
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+.DS_Store
+dist/
+*.egg-info/
+.streamlit/secrets.toml
