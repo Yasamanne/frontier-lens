@@ -82,16 +82,17 @@ Parser; last-FINAL reward; sandbox bans; pass@k; learnable-band edges; template-
 
 ## Experiment
 
-See [`results/experiment.md`](results/experiment.md) for the recorded numbers. Summary of the latest real run:
+See [`results/experiment.md`](results/experiment.md) for the recorded numbers. Summary of what was actually produced:
 
 | Field | Value |
 |---|---|
-| Policy model | *pending live k=8 run* |
-| Items generated per mode | *pending* |
-| Learnable-band share per mode | *pending* |
-| Headroom (pass@8 − pass@1) | *pending* |
-| Audit defect rate (Wilson 95% CI) | *pending* |
-| Held-out eval result | *pending* |
+| Policy model | `gemma4-e4b` (configured). **No live k=8 samples** — Ollama was not running. |
+| Items generated per mode | one-shot 0, agent 0 |
+| Learnable-band share per mode | n/a (no policy samples) |
+| Headroom (pass@8 − pass@1) | n/a |
+| Audit defect rate (Wilson 95% CI) | n/a (no generated batch) |
+| Held-out eval result | 24 seed items exported (`state_l3`, `count_l2`); **not scored** |
+| JSONL | 72 train + 24 eval + 0 SFT rows in `results/` |
 | Training run | **None.** RL-ready, not RL-proven. |
 
 Do not hand-author fixture weaknesses. Record `fixtures/recorded_run.json` from a real `--live --write-fixtures` run.
