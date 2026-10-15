@@ -115,6 +115,20 @@ CREATE TABLE IF NOT EXISTS trajectories (
     tokens_out INTEGER,
     latency_ms INTEGER
 );
+CREATE TABLE IF NOT EXISTS suspicious_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    sample_index INTEGER NOT NULL,
+    reason TEXT,
+    raw_output TEXT,
+    status TEXT,
+    reviewer TEXT,
+    note TEXT,
+    decided_at TEXT,
+    UNIQUE(run_id, model_id, question_id, sample_index)
+);
 """
 
 
@@ -150,6 +164,7 @@ def _migrate(conn) -> None:
             ("pass_at_k", "REAL"),
             ("rl_split", "TEXT"),
             ("audit_batch_id", "TEXT"),
+            ("audit_sampled", "INTEGER"),
         ],
         "reviews": [("kind", "TEXT")],
         "questions": [("reward_fn", "TEXT")],
@@ -159,3 +174,39 @@ def _migrate(conn) -> None:
         for name, typ in cols:
             if name not in existing:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS suspicious_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                question_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                sample_index INTEGER NOT NULL,
+                reason TEXT,
+                raw_output TEXT,
+                status TEXT,
+                reviewer TEXT,
+                note TEXT,
+                decided_at TEXT,
+                UNIQUE(run_id, model_id, question_id, sample_index)
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS audit_batches (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                n INTEGER NOT NULL,
+                defects INTEGER NOT NULL,
+                defect_lo REAL NOT NULL,
+                defect_hi REAL NOT NULL,
+                accepted INTEGER NOT NULL,
+                threshold REAL NOT NULL
+            )
+            """
+        )
+    )
