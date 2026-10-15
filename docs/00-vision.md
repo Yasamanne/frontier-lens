@@ -1,31 +1,31 @@
 # Vision
 
-Frontier Lens is a lens on where open-weight models fail, plus a human-gated way to grow an eval set aimed at those failures.
+Frontier Lens is a small RL data engine for open-weight models. It generates verifiable tasks calibrated to a policy model's edge, hardens the reward, audits quality with humans, and keeps a clean held-out eval.
 
 ## Who it is for
 
-Eval engineers and subject-matter reviewers who need diagnostic items, not another static leaderboard. Organizers run contests. SMEs approve or reject generated candidates. Viewers inspect heatmaps and results.
+People who need **RL-ready** task files (prompts, sandbox keys, a pinned reward function) — not another static leaderboard, and not a claim that RL already worked.
 
 ## The problem
 
-Static eval sets go stale and do not say *where* a model fails. Generated items that skip review are often broken (wrong keys, duplicates, ambiguous stems). Closed eval APIs make reruns hard to pin.
+Static eval sets go stale and do not say *where* a policy fails. Generated items that skip review are often broken. Reward that accepts hedges or the first `FINAL:` line is hackable. Holding out individual items leaks templates into eval. Closed APIs make reruns hard to pin.
 
 ## What we build
 
 1. Models predict the output of **execution-verified** snippets (they must not run code).
-2. Failures become a weakness map with **n** and **Wilson 95% CIs**.
-3. A generator from a **family not under test** proposes new items aimed at the weakest cell (one-shot or a small agent that checks its own work).
-4. Every candidate is **executed** for its key, then an SME approves, edits, or rejects it (`broken_item` vs `hard_item` vs `trivial`).
-5. We measure whether approved items are harder, discriminating, or junk, and whether the agent produces less junk than one-shot.
+2. One open model is the **policy** (k=8). Other open models are **references** (k=3). The generator family is disjoint from both.
+3. Train items are calibrated so the policy's pass rate sits in the **learnable band** `0 < pass_rate < 1`. Headroom is `pass@8 − pass@1`.
+4. **Eval holds out whole templates** (or disjoint parameter regions). The eval generator never calls the policy.
+5. Reward is binary exact match on the **last** `FINAL:` line (`exact_match_v1`). Hedges and multi-answers score 0.
+6. Humans **audit a random sample** of a generated batch (Wilson 95% CI on the defect rate) and review correct-but-suspicious policy traces.
+7. Exports: `rl_tasks.jsonl`, `eval_tasks.jsonl`, `sft_rejection_sampled.jsonl` for open trainers such as TRL GRPO.
 
 ## Why not seed from an existing benchmark
-
-Numbers below should be re-checked before quoting in the README.
 
 - **ARC-AGI-3** — interactive game environments, not questions.
 - **Humanity's Last Exam** — copying breaks originality; contamination risk.
 - **FrontierMath Tier 4** — private by design.
-- **Terminal-Bench 2.0** — Docker sandboxes and agent loops; too few tasks in two days for filled heatmap cells.
+- **Terminal-Bench 2.0** — Docker sandboxes and agent loops; too few tasks in two days for filled cells.
 
 Lessons: static sets saturate; Terminal-Bench's real strength is **ground truth from execution**, which we borrow in a **single-turn** format.
 
@@ -33,18 +33,17 @@ Lessons: static sets saturate; Terminal-Bench's real strength is **ground truth 
 
 ## Prior art
 
-Name these in the README:
-
 - **Dynabench** — humans write examples that fool models.
 - Refreshing / live benchmarks.
 - Adversarial data collection.
 - **Terminal-Bench** — execution-graded tasks.
+- Open RL trainers (**TRL GRPO**) — we export a loadable JSONL; we do not claim a training win.
 
-**What is different:** generation targets a *measured cell*; keys come from execution, not the generator's claim; a human gate decides fairness and novelty; every item carries provenance (seed vs generated, template, source failure ids, generator model, generator mode).
+**What is different:** generation is calibrated to a measured policy pass rate; keys come from execution, not the generator's claim; audit sampling estimates batch defect rate; eval templates never see the policy.
 
 ## Claims
 
-- **Claim:** the system grows a diagnostic set under human control.
-- **Do not claim:** that the generator improves models, or that the items measure general coding ability.
+- **Claim:** the system produces **RL-ready** task files under human audit, with a held-out eval that was not fit to the policy.
+- **Do not claim:** that a policy was improved (that would be **RL-proven**, and needs a training run on `eval_tasks.jsonl`).
 
-Open-weight only: no closed-source model evaluates, generates, or assists in the pipeline. Tradeoff: no closed frontier reference. Several open models still sit near the top of current open leaderboards.
+Open-weight only: no closed-source model evaluates, generates, or assists in the pipeline. Tradeoff: no closed frontier reference.

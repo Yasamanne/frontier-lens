@@ -207,8 +207,6 @@ def _store_candidate(
                 pak = stats["pass_at_k"]
                 if mode == "one_shot" and not stats["in_learnable_band"]:
                     status, reason = "auto_rejected", "out_of_band"
-            elif rl_split == "eval":
-                calibrate = False
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(

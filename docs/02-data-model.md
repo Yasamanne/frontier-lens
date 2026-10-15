@@ -10,26 +10,34 @@ SQLite file: `data/frontier_lens.db` (gitignored). Created on first seed.
 | topic | `shell_pipelines`, `python_state`, `multi_step_units`, `constraint_counting` |
 | level | 1, 2, 3 |
 | band | `harness` (L1), `standard` (L2), `hard` (L3) |
-| split | `harness`, `selection`, `baseline`, `generated` |
+| split | `harness`, `train`, `eval` — **assigned at the template** (L1 is harness). Eval templates never appear in train. |
 | template, params_json | provenance |
 | stem, code, lang, input_files_json, key | key from sandbox, run twice |
 | source | `seed` or `generated` |
-| generator_model, generator_mode, source_fail_ids | generated only |
-
-L2/L3: 12 items per cell, split 6 selection / 6 baseline with RNG seed 42. Only selection chooses the weakest cell. New items compare to baseline.
+| generator_model, generator_mode, source_fail_ids | generated only; empty on eval generation |
+| reward_fn | `exact_match_v1` |
+| audit_batch_id | generated items accepted via an audit batch |
 
 ## models
 
-Registry from `models.yaml`: id, role (`evaluated`/`generator`), family, provider, base_url, model, quant, thinking, license, api_key_env. Loader rejects missing license and overlapping families between roles.
+Registry from `models.yaml`: id, role (`policy` / `reference` / `generator`), family, provider, base_url, model, quant, thinking, license, api_key_env. Loader rejects missing license, missing policy, and generator families that overlap policy or reference.
 
-## eval_runs
+## eval_runs / attempts
 
-id, created_at, item_set_hash, status (`running`/`complete`/`failed`), k, notes. Resume from last unanswered item. One live writer at a time.
+Runs store k (policy default 8, reference default 3). Attempts: sample_index 1..k, raw_output, parsed_answer, is_correct from `exact_match_v1` on the last `FINAL:` line.
 
-## attempts
+## candidates / reviews / audit_batches / suspicious_samples / trajectories
 
-run_id, model_id, question_id, sample_index (1..k), raw_output, parsed_answer, is_correct, unparsable, latency_ms, tokens_in, tokens_out.
+Candidates: executed key, `policy_pass_rate`, `pass_at_k`, `rl_split`, status (`pending` / `auto_rejected` / `approved` / `rejected`). One-shot train items outside the learnable band are `auto_rejected` with reason `out_of_band`.
 
-## candidates / reviews / trajectories
+Audit: a random sample (default 50) is labeled; Wilson 95% CI on the defect rate; accept the batch if the upper bound is below 10%.
 
-Candidates: executed key, status (`pending`/`auto_rejected`/`approved`/`rejected`), auto_reject_reason, generator_mode. Reviews: rubric + label, reviewer, decided_at. Trajectories: agent steps. Rejected and auto-rejected rows never copy into `questions`.
+Suspicious samples: policy traces that are correct but look like lucky guesses (conflicting `FINAL:` lines, hedge then correct).
+
+## Exports
+
+Written under `data/exports/` (gitignored data dir; copy numbers into `results/experiment.md`):
+
+- `rl_tasks.jsonl` — accepted train items, `split: "train"`, includes `policy_pass_rate` / `pass_at_k`.
+- `eval_tasks.jsonl` — same columns except **no policy-feedback rates**.
+- `sft_rejection_sampled.jsonl` — `{prompt, completion, model, item_id}` from correct policy and reference samples.

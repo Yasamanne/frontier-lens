@@ -1,9 +1,23 @@
 # Experiment
 
-Fill this after Run 1 (live or replay) and SME review.
+Fill this after a real policy k=8 live run, generation, audit, and export. Do not invent numbers.
 
-Template:
+## Status
 
-Ran open-weight models live at k=3 on 104 execution-verified items. L1 harness: … Weakest cell on selection items for {model}: `{topic} / {band}`, acc X% [CI], n=6. Generated 10 candidates per mode. One-shot vs agent junk and approval rates: … Approved items vs baseline: … Failures: …
+**RL-ready, not RL-proven.** No LoRA / GRPO training run was done.
 
-Do not invent fixture weaknesses. Record `fixtures/recorded_run.json` from a real `--live --write-fixtures` run.
+## Template
+
+- Policy model:
+- k (policy / reference): 8 / 3
+- Seed items scored:
+- Items generated (one-shot / agent), train split:
+- Items generated, eval split (no policy calls):
+- Learnable-band share (one-shot / agent):
+- Mean headroom pass@8 − pass@1:
+- Audit: n=, defects=, Wilson 95% CI [, ], accepted/rejected at 10%:
+- Held-out eval pass_rate / pass@k:
+- JSONL rows: rl_tasks= eval_tasks= sft=
+- Training run: none
+
+Record `fixtures/recorded_run.json` from `--live --write-fixtures`.

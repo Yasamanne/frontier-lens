@@ -1,7 +1,7 @@
 [project]
 name = "frontier-lens"
 version = "0.1.0"
-description = "Execution-verified eval for open-weight models, with a human-gated item generator."
+description = "RL data engine for open-weight models: verifiable tasks at the policy edge, hardened reward, human audit, held-out eval."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
