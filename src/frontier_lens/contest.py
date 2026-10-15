@@ -14,7 +14,7 @@ from frontier_lens.prompt import contest_prompt
 from frontier_lens.providers.fixture import FixtureProvider
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import ModelSpec, sync_models
-from frontier_lens.scoring import is_correct
+from frontier_lens.reward import grade
 
 
 def samples_for(spec: ModelSpec, k_override: int | None = None) -> int:
@@ -99,7 +99,13 @@ def run_contest(
                         completion = provider.complete(contest_prompt(q["stem"]), spec.model)
                     numeric = bool(q["numeric"])
                     parsed = parse_final(completion.text, numeric=numeric)
-                    correct = is_correct(parsed, q["key"], numeric=numeric)
+                    reward, parsed_ans, unparsable = grade(
+                        completion.text, q["key"], numeric=numeric
+                    )
+                    correct = reward == 1
+                    if parsed_ans is not None:
+                        parsed.answer = parsed_ans
+                    parsed.unparsable = unparsable
                     with engine.begin() as conn:
                         conn.execute(
                             text(
