@@ -242,10 +242,10 @@ def promote(
                 INSERT OR REPLACE INTO questions (
                     id, topic, level, band, split, template, params_json, stem, code, lang,
                     input_files_json, key, numeric, source, generator_model, generator_mode,
-                    source_fail_ids, reward_fn
+                    source_fail_ids, reward_fn, audit_batch_id
                 ) VALUES (
                     :id, :topic, :level, :band, :split, 'generated', :params, :stem, :code, :lang,
-                    :files, :key, :numeric, 'generated', :gm, :mode, :fails, :rfn
+                    :files, :key, :numeric, 'generated', :gm, :mode, :fails, :rfn, :ab
                 )
                 """
             ),
@@ -266,6 +266,7 @@ def promote(
                 "mode": cand["generator_mode"],
                 "fails": cand["source_fail_ids"],
                 "rfn": REWARD_FN,
+                "ab": cand["audit_batch_id"],
             },
         )
         conn.execute(
