@@ -6,9 +6,9 @@ import os
 from openai import OpenAI
 
 from frontier_lens.agent.budget import MAX_STEPS
-from frontier_lens.agent.tools import TOOLS, handle, tools_for
-from frontier_lens.heatmap import weakest_cell
+from frontier_lens.agent.tools import handle, tools_for
 from frontier_lens.generate import _eval_cells
+from frontier_lens.heatmap import weakest_cell
 from frontier_lens.registry import sync_models
 
 

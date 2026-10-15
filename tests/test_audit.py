@@ -17,7 +17,7 @@ def test_audit_wilson_upper_bound_accepts_clean_sample():
     decision = audit_decision(0, 50, 0.10)
     assert decision["accepted"]
     assert decision["hi"] < 0.10
-    lo, hi = wilson_interval(0, 50)
+    _lo, hi = wilson_interval(0, 50)
     assert abs(decision["hi"] - hi) < 1e-12
 
 

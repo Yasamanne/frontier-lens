@@ -2,7 +2,6 @@ from frontier_lens.stats import (
     headroom,
     in_learnable_band,
     pass_at_k,
-    pass_rate,
     wilson_interval,
 )
 

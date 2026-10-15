@@ -88,7 +88,7 @@ def estimate_pass_rate(
     if complete_fn is None:
         provider = OpenAICompatibleProvider(policy.base_url or "", policy.api_key_env)
 
-        def complete_fn(prompt: str) -> str:  # noqa: F811
+        def complete_fn(prompt: str) -> str:
             return provider.complete(prompt, policy.model).text
 
     correct = 0

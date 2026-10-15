@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
-from typing import Literal
 
 from frontier_lens.config import DATA_DIR
 from frontier_lens.db import get_engine
@@ -43,7 +43,7 @@ class TaskRow(BaseModel):
     split: Literal["train", "eval"]
 
     @model_validator(mode="after")
-    def eval_has_no_policy_feedback(self) -> "TaskRow":
+    def eval_has_no_policy_feedback(self) -> TaskRow:
         if self.split == "eval" and (
             self.policy_pass_rate is not None or self.pass_at_k is not None
         ):

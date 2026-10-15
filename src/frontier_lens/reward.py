@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 
 from frontier_lens.parse import FINAL_RE, normalize
 
@@ -26,9 +25,7 @@ def is_degenerate(answer: str) -> bool:
         return True
     if HEDGE_RE.search(text):
         return True
-    if "," in text or " and " in text.lower():
-        return True
-    return False
+    return "," in text or " and " in text.lower()
 
 
 def grade(raw: str, key: str, numeric: bool = True) -> tuple[int, str | None, bool]:

@@ -7,13 +7,13 @@ import streamlit as st
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
+from frontier_lens.registry import policy_spec
 from frontier_lens.review import (
     close_audit_batch,
     draw_audit_sample,
     flag_suspicious,
     promote,
 )
-from frontier_lens.registry import policy_spec
 
 st.title("Generate + Review")
 role = st.session_state.get("role", "Viewer")
