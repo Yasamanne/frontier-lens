@@ -158,7 +158,8 @@ st.markdown("""
     <a href="/Evaluate"        target="_self" class="nav-link">Evaluate</a>
     <a href="/Weaknesses"      target="_self" class="nav-link">Weaknesses</a>
     <a href="/Generate_Review" target="_self" class="nav-link">Generate</a>
-    <a href="/Dataset" target="_self" class="nav-link">Dataset</a>
+    <a href="/Dataset"         target="_self" class="nav-link">Dataset</a>
+    <a href="/Headroom"        target="_self" class="nav-link">Headroom</a>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -234,17 +235,18 @@ st.divider()
 st.markdown("""
 <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;
             letter-spacing:0.14em;color:#5A5875;margin-bottom:12px;">
-    Pipeline — 5 steps
+    Pipeline — 6 steps
 </div>
 """, unsafe_allow_html=True)
 
-cols = st.columns(5)
+cols = st.columns(6)
 steps = [
-    ("1", "🌱", "Seed", "Generate 182 procedural questions or upload your own dataset.", "/Seed"),
-    ("2", "⚡", "Evaluate", "Run the policy k=8 times on every question. Record every trace.", "/Evaluate"),
-    ("3", "🔍", "Weaknesses", "Pass-rate histogram, failure-mode heatmap, and dominant error type.", "/Weaknesses"),
-    ("4", "✨", "Generate", "LLM-generates new items targeting the weakest cell.", "/Generate_Review"),
-    ("5", "📊", "Results", "Band share, audit CI, and rl_tasks.jsonl export for TRL/GRPO.", "/Results"),
+    ("1", "🌱", "Seed",      "Generate procedural questions or upload your own dataset.", "/Seed"),
+    ("2", "⚡", "Evaluate",  "Run the policy k=8 times on every question. Record every trace.", "/Evaluate"),
+    ("3", "🔍", "Weaknesses","Pass-rate histogram, failure-mode heatmap, and dominant error type.", "/Weaknesses"),
+    ("4", "✨", "Generate",  "LLM-generates new items targeting weak cells. SME review queue.", "/Generate_Review"),
+    ("5", "📊", "Dataset",   "Band share, audit CI, and rl_tasks.jsonl export for TRL/GRPO.", "/Dataset"),
+    ("6", "📈", "Headroom",  "Before vs. after: how much the pipeline grew the RL-trainable pool.", "/Headroom"),
 ]
 
 for col, (num, icon, name, desc, href) in zip(cols, steps):

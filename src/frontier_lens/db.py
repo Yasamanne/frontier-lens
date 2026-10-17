@@ -165,6 +165,7 @@ def _migrate(conn) -> None:
             ("rl_split", "TEXT"),
             ("audit_batch_id", "TEXT"),
             ("audit_sampled", "INTEGER"),
+            ("run_id", "TEXT"),
         ],
         "reviews": [("kind", "TEXT")],
         "questions": [("reward_fn", "TEXT"), ("audit_batch_id", "TEXT"), ("upload_filename", "TEXT"), ("sme_flagged", "INTEGER"), ("sme_source", "TEXT")],

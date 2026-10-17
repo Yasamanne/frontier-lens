@@ -419,6 +419,7 @@ def propose_one_shot(
             gen.id,
             "one_shot",
             [model_id],
+            run_id=run_id,
             rl_split="train",
             calibrate=True,
         )
@@ -434,6 +435,7 @@ def _store_candidate(
     mode: str,
     fail_ids: list[str],
     *,
+    run_id: str | None = None,
     rl_split: str = "train",
     calibrate: bool = True,
     complete_fn=None,
@@ -490,10 +492,10 @@ def _store_candidate(
                 INSERT INTO candidates (
                     id, topic, band, stem, code, lang, input_files_json, executed_key, numeric,
                     status, auto_reject_reason, generator_model, generator_mode, source_fail_ids,
-                    created_at, policy_pass_rate, pass_at_k, rl_split
+                    created_at, policy_pass_rate, pass_at_k, rl_split, run_id
                 ) VALUES (
                     :id, :topic, :band, :stem, :code, :lang, :files, :key, :numeric,
-                    :status, :reason, :gm, :mode, :fails, :ts, :rate, :pak, :split
+                    :status, :reason, :gm, :mode, :fails, :ts, :rate, :pak, :split, :run_id
                 )
                 """
             ),
@@ -516,6 +518,7 @@ def _store_candidate(
                 "rate": rate,
                 "pak": pak,
                 "split": rl_split,
+                "run_id": run_id,
             },
         )
     print(f"candidate {cid} {status} {reason} split={rl_split} pass_rate={rate}")
@@ -581,6 +584,8 @@ def _store_hinted_candidate(
     band: str,
     gen_id: str,
     stats: dict,
+    *,
+    run_id: str | None = None,
 ) -> str:
     """Persist a hinted stem (same code/key as the original question) as a candidate."""
     cid = uuid.uuid4().hex[:12]
@@ -598,10 +603,10 @@ def _store_hinted_candidate(
                 INSERT INTO candidates (
                     id, topic, band, stem, code, lang, input_files_json, executed_key, numeric,
                     status, auto_reject_reason, generator_model, generator_mode, source_fail_ids,
-                    created_at, policy_pass_rate, pass_at_k, rl_split
+                    created_at, policy_pass_rate, pass_at_k, rl_split, run_id
                 ) VALUES (
                     :id, :topic, :band, :stem, :code, :lang, :files, :key, :numeric,
-                    :status, :reason, :gm, 'light_hint', :fails, :ts, :rate, :pak, 'train'
+                    :status, :reason, :gm, 'light_hint', :fails, :ts, :rate, :pak, 'train', :run_id
                 )
                 """
             ),
@@ -622,6 +627,7 @@ def _store_hinted_candidate(
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "rate": rate,
                 "pak": pak,
+                "run_id": run_id,
             },
         )
     print(f"hint-candidate {cid} source={source_qid} {status} pass_rate={rate:.3f}")
@@ -864,6 +870,7 @@ def rescue_with_hints(
                     key=q["key"], numeric=bool(q["numeric"]),
                     topic=q["topic"], band=q["band"],
                     gen_id=gen.id, stats=stats,
+                    run_id=run_id,
                 )
                 rescued = True
                 rescue_level = level
@@ -899,6 +906,7 @@ def rescue_with_hints(
 def generate_similar_questions(
     source_questions: list[dict],
     *,
+    run_id: str | None = None,
     n_each: int = 1,
     complete_fn=None,
     log_fn=None,
@@ -987,6 +995,7 @@ def generate_similar_questions(
                 gen.id,
                 "similar_augment",
                 [q["id"]],
+                run_id=run_id,
                 rl_split="train",
                 calibrate=True,
                 complete_fn=complete_fn,
@@ -1041,6 +1050,7 @@ def _run_similar_agent(
     gen,
     client,
     *,
+    run_id: str | None = None,
     max_loops: int = 3,
     log_fn=None,
     calibration_k: int | None = None,
@@ -1130,6 +1140,7 @@ def _run_similar_agent(
                 tool_name, args,
                 gen_id=gen.id,
                 fail_model="",
+                run_id=run_id,
                 rl_split="train",
                 log_fn=_handle_log,
                 calibration_k=calibration_k,
@@ -1165,6 +1176,7 @@ def _run_similar_agent(
 def generate_similar_react(
     source_questions: list[dict],
     *,
+    run_id: str | None = None,
     n_each: int = 1,
     max_loops: int = 3,
     log_fn=None,
@@ -1226,6 +1238,7 @@ def generate_similar_react(
 
             candidate_id = _run_similar_agent(
                 q, gen, client,
+                run_id=run_id,
                 max_loops=max_loops,
                 log_fn=log_fn,
                 calibration_k=calibration_k,
@@ -1332,6 +1345,7 @@ def _review_similar_question(
 def generate_similar_with_review(
     source_questions: list[dict],
     *,
+    run_id: str | None = None,
     n_each: int = 1,
     max_fix_iterations: int = MAX_FIX_ITERATIONS,
     calibration_k: int | None = None,
@@ -1504,6 +1518,7 @@ def generate_similar_with_review(
                 cid = _store_candidate(
                     current_raw, q["topic"], q["band"],
                     gen.id, "similar_augment", [q["id"]],
+                    run_id=run_id,
                     rl_split="train", calibrate=True,
                     log_fn=_cal_log, calibration_k=k,
                 )

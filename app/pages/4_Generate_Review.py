@@ -6,10 +6,10 @@ for _name in list(sys.modules):
     if _name == "frontier_lens" or _name.startswith("frontier_lens."):
         del sys.modules[_name]
 
-import streamlit as st
-
 # ── Shared theme CSS + top nav (injected) ────────────────────────────────
 import streamlit as _st_nav
+import streamlit as st
+
 _st_nav.markdown("""
 <style>.nav-bar{display:flex;align-items:center;justify-content:space-between;padding:0 0 16px 0;border-bottom:1px solid #2D2D55;margin-bottom:32px;}.nav-links{display:flex;gap:0;align-items:center;}a.nav-link{display:inline-block;padding:8px 20px;color:#EDE8DC!important;font-size:.88rem;font-weight:500;text-decoration:none!important;border-bottom:2px solid transparent;transition:all .15s;letter-spacing:.01em;outline:none;}a.nav-link:hover{color:#FF8F5C!important;border-bottom-color:#FF6B2B;}a.nav-link.active{color:#FF8F5C!important;font-weight:700;border-bottom-color:#FF6B2B;}</style><div class="nav-bar"><a href="/" target="_self" style="text-decoration:none"><svg width="150" height="22" viewBox="0 0 150 22" style="overflow:visible;"><defs><linearGradient id="ng2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#FF6B2B"/><stop offset="100%" stop-color="#C96FFF"/></linearGradient></defs><text x="0" y="17" font-family="Inter,sans-serif" font-size="15" font-weight="800" letter-spacing="-0.3" fill="url(#ng2)">Frontier Lens</text></svg></a><div class="nav-links"><a href="/Seed" target="_self" class="nav-link">Seed</a><a href="/Evaluate" target="_self" class="nav-link">Evaluate</a><a href="/Weaknesses" target="_self" class="nav-link">Weaknesses</a><a href="/Generate_Review" target="_self" class="nav-link active">Generate</a><a href="/Dataset" target="_self" class="nav-link">Dataset</a></div></div>
 """, unsafe_allow_html=True)
@@ -33,7 +33,7 @@ role = st.session_state.get("role", "Viewer")
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
-from frontier_lens.registry import policy_spec, sync_models
+from frontier_lens.registry import policy_spec
 from frontier_lens.review import (
     flag_suspicious,
     promote,
@@ -43,6 +43,7 @@ st.title("Generate")
 engine = get_engine()
 
 import uuid as _uuid
+
 from frontier_lens.failure_analysis import rl_suitable_questions, zero_pass_questions
 from frontier_lens.runlog import write_op_event
 
@@ -340,7 +341,7 @@ else:
                 if event == "review_result":
                     score = f.get("score", 0)
                     passed = f.get("passed", False)
-                    badge = "✅ PASSED" if passed else f"❌ FAILED"
+                    badge = "✅ PASSED" if passed else "❌ FAILED"
                     issues = "; ".join(f.get("issues", []))
                     cs = f.get("criterion_scores", {})
                     scores_str = " | ".join(f"{k.replace('_',' ')[:8]}={v}" for k,v in cs.items())
@@ -369,18 +370,18 @@ else:
 
             if use_review:
                 aug_results = generate_similar_with_review(
-                    seeds, n_each=int(aug_each),
+                    seeds, run_id=_run_id, n_each=int(aug_each),
                     max_fix_iterations=int(aug_fix_iters or 3),
                     log_fn=augment_log_fn, calibration_k=k_val,
                 )
             elif use_agent:
                 aug_results = generate_similar_react(
-                    seeds, n_each=int(aug_each), max_loops=int(aug_loops or 3),
+                    seeds, run_id=_run_id, n_each=int(aug_each), max_loops=int(aug_loops or 3),
                     log_fn=augment_log_fn, calibration_k=k_val,
                 )
             else:
                 aug_results = generate_similar_questions(
-                    seeds, n_each=int(aug_each),
+                    seeds, run_id=_run_id, n_each=int(aug_each),
                     log_fn=augment_log_fn, calibration_k=k_val,
                 )
 
@@ -463,28 +464,36 @@ else:
                             "and the gold key will be recomputed."
                         )
 
-                sme_label = st.selectbox(
-                    "Label", ["hard_item", "trivial", "broken_item", "rejected"],
-                    key=f"sme-lab-{c['id']}",
-                )
                 sme_note = st.text_input("Note (optional)", key=f"sme-note-{c['id']}")
-                if st.button("✔ Submit review", key=f"sme-go-{c['id']}"):
-                    try:
-                        promote(
-                            c["id"], sme_label,
-                            fair=sme_label == "hard_item", novel=True,
-                            hard=sme_label == "hard_item", note=sme_note,
-                            kind="sme_queue",
-                            edited_stem=edited_stem,
-                            edited_code=edited_code,
-                        )
-                        st.success(
-                            f"Candidate `{c['id']}` "
-                            + ("promoted ✅" if sme_label == "hard_item" else "rejected ❌")
-                        )
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(str(exc))
+                btn_approve, btn_reject = st.columns(2)
+                with btn_approve:
+                    if st.button("✅ Approve", key=f"sme-approve-{c['id']}", use_container_width=True):
+                        try:
+                            promote(
+                                c["id"], "hard_item",
+                                fair=True, novel=True, hard=True,
+                                note=sme_note, kind="sme_queue",
+                                edited_stem=edited_stem,
+                                edited_code=edited_code,
+                            )
+                            st.success(f"Candidate `{c['id']}` approved and promoted ✅")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
+                with btn_reject:
+                    if st.button("❌ Reject", key=f"sme-reject-{c['id']}", use_container_width=True):
+                        try:
+                            promote(
+                                c["id"], "rejected",
+                                fair=False, novel=True, hard=False,
+                                note=sme_note, kind="sme_queue",
+                                edited_stem=edited_stem,
+                                edited_code=edited_code,
+                            )
+                            st.warning(f"Candidate `{c['id']}` rejected ❌")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
             else:
                 st.text(c["stem"][:1000] if c["stem"] else "(empty)")
                 st.info("Switch Role to **SME** to approve or reject.")
