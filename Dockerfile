@@ -21,6 +21,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy the rest of the application
 COPY app/ ./app/
 COPY models.yaml ./
+COPY .streamlit/ .streamlit/
 
 EXPOSE 8501
 
