@@ -17,7 +17,7 @@ if [ -n "$MISSING" ]; then
     echo ""
 fi
 
-exec uv run streamlit run app/Home.py \
+exec streamlit run app/Home.py \
     --server.port="${PORT:-8501}" \
     --server.address=0.0.0.0 \
     --server.headless=true

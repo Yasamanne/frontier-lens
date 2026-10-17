@@ -1,8 +1,9 @@
 [build]
-builder = "railpack"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "uv run streamlit run app/Home.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"
-healthcheckPath = "/"
+# No startCommand: the Dockerfile ENTRYPOINT (docker-entrypoint.sh) starts Streamlit.
+healthcheckPath = "/_stcore/health"
 healthcheckTimeout = 60
-restartPolicyType = "on-failure"
+restartPolicyType = "ON_FAILURE"
