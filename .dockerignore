@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# Data & runtime artifacts
+data/
+logs/
+results/
+fixtures/
+
+# Dev / editor
+# Note: docker-entrypoint.sh is intentionally NOT excluded
+.env
+.env.*
+*.toml.local
+.cursor/
+.vscode/
+*.swp
+
+# Docs & notes (not needed at runtime)
+docs/
+notes/
+
+# Git
+.git/
+.gitignore
+
+# Tests
+tests/
