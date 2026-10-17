@@ -10,7 +10,9 @@ Reference models: k=3. Heatmap cells still use Wilson 95% CIs over items; do not
 
 ## Holdout
 
-Entire templates (currently `state_l3`, `count_l2`) are eval. No template or parameter region appears in both splits. Eval items — seed and generated — are produced **without policy feedback**. Train generation may call `estimate_pass_rate`.
+Each generator family holds out a disjoint seed range as its own template (`shell_pipelines_eval`, `python_state_eval`, `constraint_counting_eval`, `multi_step_units_eval`, origins 10000–10003). Train uses the same knobs on origins 0–7 under `{topic}_train`. The same template and seed range never appears in both splits. Eval items — seed and generated — are produced **without policy feedback**. Train generation may call `estimate_pass_rate`.
+
+**L2/L3 knobs (production):** `uv run python -m frontier_lens.calibrate --live` measures the policy on the monotone grid (k=8) and writes `data/level_knobs.json` with policy id, k, timestamp, per-point rates, and chosen indices. L2 is the grid point in pass-rate `[0.2, 0.8]` closest to 0.5 that still has a harder lower point; L3 is that harder point (prefer rate `< 0.2`). Then `seed --force`. Each L2/L3 seed row stores `knob_source` / `knob_policy` / `knob_grid_index` in `params_json`. CI uses a synthetic probe curve unless `FRONTIER_LENS_REQUIRE_LIVE_KNOBS=1`.
 
 L1 harness is neither train nor eval for RL export.
 

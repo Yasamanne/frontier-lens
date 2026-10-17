@@ -2,7 +2,7 @@
 
 A small **RL data engine** for open-weight models. It generates verifiable tasks calibrated to a policy model's edge, hardens exact-match reward, audits quality with humans, and keeps a clean held-out eval.
 
-Models predict the output of short programs. They must not run code. Answers end with `FINAL: <answer>`. Keys come from a local sandbox, never from a model's claim. Reward is `exact_match_v1` (last `FINAL:` line only).
+Models answer execution-verified tasks. They must not run code. The key is sandbox stdout. Answers end with `FINAL: <answer>`. Reward is `exact_match_v1` (last `FINAL:` line only).
 
 **Claim:** the pipeline produces **RL-ready** JSONL (prompts, gold, pinned reward) under human audit.  
 **Not claimed:** that RL training improved the policy. That would be **RL-proven**, and it was not run unless the experiment block below says otherwise.
@@ -26,37 +26,42 @@ uv python pin 3.11
 uv sync --group dev
 cp .env.example .env
 uv run python -m frontier_lens.seed
+# Production L2/L3: measure the policy, then rebuild seeds
+# uv run python -m frontier_lens.calibrate --live && uv run python -m frontier_lens.seed --force
 uv run pytest
 uv run streamlit run app/Home.py
 ```
 
 The app opens at `http://localhost:8501`. Pages: **Contest**, **Weaknesses** (policy pass-rate histogram + heatmap), **Generate + Review** (audit sample + suspicious queue), **Results** (band share, headroom, audit CI, one-shot vs agent). Seed before Contest. The sidebar role is a switch, not login.
 
-## Live local models (Ollama)
+## Live models (OpenRouter)
 
-Optional. Local weights are Ollama GGUF **Q4_K_M**. The default **policy** is `gemma4-e4b` (`gemma4:e4b`) talking to `http://localhost:11434/v1`. A connection refused error means Ollama is not running.
+The roster in `models.yaml` calls **OpenRouter** (`https://openrouter.ai/api/v1`). All entries are open-weight. Copy `.env.example` to `.env` and set `OPENROUTER_API_KEY`. Seed, tests, and replay still work with no key.
+
+OpenRouter does not host Gemma 4 e4b. The **policy** is Gemma 4 26B-A4B (`google/gemma-4-26b-a4b-it`). These are paid slugs; `:free` variants exist but share a 50 request/day cap, which is not enough for policy k=8.
 
 ```bash
-ollama serve
-ollama pull gemma4:e4b
-uv run python -m frontier_lens.contest --live --models gemma4-e4b --write-fixtures
+cp .env.example .env   # then paste OPENROUTER_API_KEY
+uv run python -m frontier_lens.contest --live --models gemma4-26b-a4b --write-fixtures
+# logs/RUN_ID.txt and logs/RUN_ID.jsonl: prompt, model output, sandbox key, grade per sample
+# Rebuild a log from SQLite: uv run python -m frontier_lens.runlog --run RUN_ID
 ```
 
 Policy uses k=8; references use k=3 unless you pass `--k`. `--write-fixtures` saves answers to `fixtures/recorded_run.json`. Replay does not call a model:
 
 ```bash
-uv run python -m frontier_lens.contest --replay --models gemma4-e4b
+uv run python -m frontier_lens.contest --replay --models gemma4-26b-a4b
 ```
 
-In the app, set Mode to **live** only when Ollama is up (sidebar **Ollama ok**). Role must be Organizer or SME.
+In the app, set Mode to **live** only when the sidebar says **OpenRouter key set**. Role must be Organizer or SME. Ollama is unused unless you point a row in `models.yaml` back at `localhost:11434`.
 
 ## Generate, audit, export
 
 Train split may sample the policy (`estimate_pass_rate`, k=8) and aims for the learnable band. Eval split never calls the policy.
 
 ```bash
-uv run python -m frontier_lens.generate --run RUN_ID --model gemma4-e4b --mode one_shot --split train
-uv run python -m frontier_lens.generate --run RUN_ID --model gemma4-e4b --mode one_shot --split eval
+uv run python -m frontier_lens.generate --run RUN_ID --model gemma4-26b-a4b --mode one_shot --split train
+uv run python -m frontier_lens.generate --run RUN_ID --model gemma4-26b-a4b --mode one_shot --split eval
 uv run python -m frontier_lens.export
 ```
 
@@ -70,11 +75,11 @@ These files are meant to load into TRL GRPO (prompt + reward on `ground_truth` v
 
 ## Seed bank
 
-104 original template items (8 L1 harness, 48 L2, 48 L3) across `shell_pipelines`, `python_state`, `multi_step_units`, `constraint_counting`. Eval holds out whole templates (`state_l3`, `count_l2`). `uv run python -m frontier_lens.seed` is non-interactive.
+104 procedural items (8 L1 harness, 64 train, 32 eval) from seeded generators in `src/frontier_lens/templates/`. L2 and L3 are knob settings from `python -m frontier_lens.calibrate` (an offline probe curve until `--live` measures the policy). Eval holds out each family's `{topic}_eval` template (seeds 10000–10003); train uses seeds 0–7. Hand-written Python gotchas are in [`docs/known-gotchas.md`](docs/known-gotchas.md) and are not seeded. `uv run python -m frontier_lens.seed` is non-interactive.
 
 ## Roster
 
-**Policy:** Gemma 4 e4b (local Ollama Q4). **References:** Gemma 4 12B, Qwen 3.8 27B (skip 27B if it does not fit), DeepSeek V4.1 Flash, Llama 4 Scout. **Generator:** GLM-5.3 (family disjoint from policy and references; not evaluated). Licenses are in `models.yaml`. Verify tags before quoting.
+**Policy:** Gemma 4 26B-A4B via OpenRouter. **References:** Gemma 4 31B, Qwen 3.8 27B, DeepSeek V4.1 Flash, Llama 4 Scout. **Generator:** GLM-5.3 (family disjoint from policy and references; not evaluated). Licenses are in `models.yaml`. Verify slugs before quoting.
 
 ## Tests and CI
 
@@ -86,13 +91,13 @@ See [`results/experiment.md`](results/experiment.md) for the recorded numbers. S
 
 | Field | Value |
 |---|---|
-| Policy model | `gemma4-e4b` (configured). **No live k=8 samples** — Ollama was not running. |
+| Policy model | `gemma4-26b-a4b` (`google/gemma-4-26b-a4b-it` on OpenRouter). **No live k=8 samples yet.** |
 | Items generated per mode | one-shot 0, agent 0 |
 | Learnable-band share per mode | n/a (no policy samples) |
 | Headroom (pass@8 − pass@1) | n/a |
 | Audit defect rate (Wilson 95% CI) | n/a (no generated batch) |
-| Held-out eval result | 24 seed items exported (`state_l3`, `count_l2`); **not scored** |
-| JSONL | 72 train + 24 eval + 0 SFT rows in `results/` |
+| Held-out eval result | 32 seed items (`*_eval` templates, seeds 10000–10003); **not scored** |
+| JSONL | 72 train + 24 eval + 0 SFT rows in `results/` (previous hand-written bank; not re-exported) |
 | Training run | **None.** RL-ready, not RL-proven. |
 
 Do not hand-author fixture weaknesses. Record `fixtures/recorded_run.json` from a real `--live --write-fixtures` run.

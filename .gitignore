@@ -5,6 +5,8 @@ data/*.db-journal
 data/*.db-wal
 data/*.db-shm
 data/exports/
+data/level_knobs.json
+logs/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

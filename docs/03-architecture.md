@@ -17,7 +17,7 @@ export.py → rl_tasks.jsonl / eval_tasks.jsonl / sft_rejection_sampled.jsonl
 No Docker. Untrusted generated code:
 
 - Python: `ast` allowlist (`math`, `itertools`, `collections`, `decimal`); no `open`/`exec`/`eval`/`__import__`/dunders; `python -I`; temp dir; 2s timeout.
-- Shell: `shlex`; allowlist `cat cut sort uniq wc head tail tr grep printf` (no `sed`/`awk` unless a template needs them); reject redirection, `;`, `&&`, backticks, `$(`, absolute paths; temp dir with only the item's files; `LC_ALL=C`; 2s timeout.
+- Shell: `shlex`; allowlist `cat cut sort uniq wc head tail tr grep printf awk` (`sed` stays banned; awk is required by shell pipelines). `;`, `>`, `<`, `$`, `&&`, backticks, and `$(` are rejected outside single quotes, so a quoted awk program may contain them. Absolute paths rejected. Temp dir with only the item's files; `LC_ALL=C`; 2s timeout.
 
 Run twice; mismatch → `non_deterministic`. This is **not** a production isolation boundary.
 

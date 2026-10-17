@@ -4,12 +4,12 @@ Two-day, experiment-first. The finding is the artifact. Streamlit is a thin view
 
 ## In
 
-- 104 original seed items: L1 harness (~8), L2 standard (48), L3 hard (48).
-- 4 topics. Train vs eval is a **template-level** split, not item-level.
+- 104 procedural seed items: L1 harness (8), L2 (48), L3 (48). L2/L3 knobs come from `calibrate.py` (live policy rates in production; synthetic probe in CI). No copied benchmark items.
+- 4 topics. Train vs eval is a **template-level** split: each family holds out seeds 10000–10003 as `{topic}_eval`, disjoint from train seeds 0–7.
 - SQLite on disk. Reviewers run `uv sync`.
 - Open-weight models only, via one OpenAI-compatible adapter plus fixture replay.
 - Local models: Ollama GGUF, default **Q4_K_M**. Not bitsandbytes, not vLLM on this laptop.
-- Policy default: `gemma4:e4b` via Ollama. References and a disjoint-family generator in `models.yaml`.
+- Policy default: Gemma 4 26B-A4B via OpenRouter. References and a disjoint-family generator in `models.yaml`.
 - One-shot vs agent generators; train split may call `estimate_pass_rate`; eval split must not.
 - Audit sampling (default n=50, Wilson 95%, accept if upper bound < 10%) plus a suspicious-correct queue.
 - JSONL export for TRL GRPO / SFT.
@@ -45,7 +45,7 @@ This machine is Intel macOS. Qwen 3.8 27B even at Q4 may not load. Default polic
 ```bash
 uv sync
 uv run python -m frontier_lens.seed
-uv run python -m frontier_lens.contest --live --models gemma4-e4b --write-fixtures
+uv run python -m frontier_lens.contest --live --models gemma4-26b-a4b --write-fixtures
 uv run python -m frontier_lens.export
 uv run streamlit run app/Home.py
 uv run pytest

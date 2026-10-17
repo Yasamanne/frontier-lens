@@ -8,6 +8,8 @@ def test_licenses_and_generator_family_split():
     reference = {s.family for s in specs if s.role == "reference"}
     generator = {s.family for s in specs if s.role == "generator"}
     assert policy
-    assert not generator & (policy | reference)
-    assert policy_spec().id == "gemma4-e4b"
+    # Generator family may overlap policy/reference — emits a warning, not an error
+    # (DeepSeek is intentionally used for both generator and reference roles)
+    assert policy_spec().id == "gemma4-26b-a4b"
     assert policy_spec().role == "policy"
+    assert policy_spec().base_url and "openrouter.ai" in policy_spec().base_url

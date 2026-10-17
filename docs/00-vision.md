@@ -12,7 +12,7 @@ Static eval sets go stale and do not say *where* a policy fails. Generated items
 
 ## What we build
 
-1. Models predict the output of **execution-verified** snippets (they must not run code).
+1. Models answer **execution-verified** tasks (they must not run code). The key is sandbox stdout. Counting and unit items state the problem in prose; Python and shell items show the program.
 2. One open model is the **policy** (k=8). Other open models are **references** (k=3). The generator family is disjoint from both.
 3. Train items are calibrated so the policy's pass rate sits in the **learnable band** `0 < pass_rate < 1`. Headroom is `pass@8 − pass@1`.
 4. **Eval holds out whole templates** (or disjoint parameter regions). The eval generator never calls the policy.

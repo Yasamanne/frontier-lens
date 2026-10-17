@@ -2,18 +2,13 @@
 
 ## Env
 
-Copy `.env.example` to `.env` (gitignored). Optional: `OPENROUTER_API_KEY` for hosted open weights. `OLLAMA_BASE_URL` defaults to `http://localhost:11434/v1`. `DATABASE_URL` defaults to `sqlite:///data/frontier_lens.db`. `SPEND_CAP_USD` defaults to 5.
+Copy `.env.example` to `.env` (gitignored). `OPENROUTER_API_KEY` is required for live contest and generation. `OLLAMA_BASE_URL` is unused unless you add a local row in `models.yaml`. `DATABASE_URL` defaults to `sqlite:///data/frontier_lens.db`. `SPEND_CAP_USD` defaults to 5.
 
 No keys are required for seed, tests, or fixture replay.
 
-## Local inference
+## Hosted inference (OpenRouter)
 
-```bash
-ollama pull gemma4:12b
-ollama serve
-```
-
-Quant: Q4_K_M. Streamlit does not load weights. It calls the OpenAI-compatible `/v1` on the inference host.
+The default roster is OpenRouter open-weight slugs. Streamlit does not load weights; it calls `https://openrouter.ai/api/v1`. Local Ollama remains optional if you add a `localhost` row in `models.yaml`.
 
 ## Deployed Streamlit
 
