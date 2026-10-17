@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from frontier_lens.config import POLICY_K
 from frontier_lens.db import get_engine
+from frontier_lens.parallel import map_with_events
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import sync_models
 
@@ -59,12 +60,12 @@ def rescue_with_hints(
         raise RuntimeError("No generator model configured in models.yaml.")
     provider = OpenAICompatibleProvider(gen.base_url or "", gen.api_key_env)
     engine = get_engine()
-    results: list[dict] = []
-
     _log("rescue_start", n_questions=len(question_ids), run_id=run_id,
          model_id=model_id, calibration_k=k, max_hints=max_hints)
 
-    for i, qid in enumerate(question_ids):
+    def _rescue_one(item: tuple[int, str], _log) -> dict | None:
+        """Worker: full hint ladder for one question. Levels stay sequential."""
+        i, qid = item
         with engine.connect() as conn:
             q = conn.execute(
                 text(
@@ -76,13 +77,13 @@ def rescue_with_hints(
         if not q:
             _log("rescue_question_skip", index=i + 1, total=len(question_ids),
                  question_id=qid, reason="not_found")
-            continue
+            return None
 
         if not (q.get("code") or "").strip():
             _log("rescue_question_skip", index=i + 1, total=len(question_ids),
                  question_id=qid,
                  reason="no_verifier_code — uploaded/multiple-choice question")
-            continue
+            return None
 
         fa = failure_modes(run_id, model_id, q["topic"], q["band"])
         dominant = fa.get("dominant_mode", "unknown")
@@ -198,7 +199,7 @@ def rescue_with_hints(
                  pass_rate=final_pass_rate, rl_suitable=False,
                  rescue_level=None, n_hints_tried=len(hint_rounds))
 
-        results.append({
+        return {
             "question_id": qid,
             "topic": q["topic"], "band": q["band"],
             "stem_original": q["stem"], "gold_key": q["key"],
@@ -209,7 +210,14 @@ def rescue_with_hints(
             "rl_suitable": rescued,
             "rescue_level": rescue_level,
             "hint": hint_rounds[-1]["hint"] if hint_rounds else "",
-        })
+        }
+
+    # Questions are independent — run them concurrently; events reach log_fn
+    # on this thread.
+    results = [
+        r for r in map_with_events(_rescue_one, enumerate(question_ids), log_fn)
+        if r is not None
+    ]
 
     n_rescued = sum(1 for r in results if r["rl_suitable"])
     _log("rescue_end", n_total=len(question_ids),

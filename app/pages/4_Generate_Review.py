@@ -11,7 +11,7 @@ import streamlit as _st_nav
 import streamlit as st
 
 _st_nav.markdown("""
-<style>.nav-bar{display:flex;align-items:center;justify-content:space-between;padding:0 0 16px 0;border-bottom:1px solid #2D2D55;margin-bottom:32px;}.nav-links{display:flex;gap:0;align-items:center;}a.nav-link{display:inline-block;padding:8px 20px;color:#EDE8DC!important;font-size:.88rem;font-weight:500;text-decoration:none!important;border-bottom:2px solid transparent;transition:all .15s;letter-spacing:.01em;outline:none;}a.nav-link:hover{color:#FF8F5C!important;border-bottom-color:#FF6B2B;}a.nav-link.active{color:#FF8F5C!important;font-weight:700;border-bottom-color:#FF6B2B;}</style><div class="nav-bar"><a href="/" target="_self" style="text-decoration:none"><svg width="150" height="22" viewBox="0 0 150 22" style="overflow:visible;"><defs><linearGradient id="ng2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#FF6B2B"/><stop offset="100%" stop-color="#C96FFF"/></linearGradient></defs><text x="0" y="17" font-family="Inter,sans-serif" font-size="15" font-weight="800" letter-spacing="-0.3" fill="url(#ng2)">Frontier Lens</text></svg></a><div class="nav-links"><a href="/Seed" target="_self" class="nav-link">Seed</a><a href="/Evaluate" target="_self" class="nav-link">Evaluate</a><a href="/Weaknesses" target="_self" class="nav-link">Weaknesses</a><a href="/Generate_Review" target="_self" class="nav-link active">Generate</a><a href="/Dataset" target="_self" class="nav-link">Dataset</a></div></div>
+<style>.nav-bar{display:flex;align-items:center;justify-content:space-between;padding:0 0 16px 0;border-bottom:1px solid #2D2D55;margin-bottom:32px;}.nav-links{display:flex;gap:0;align-items:center;}a.nav-link{display:inline-block;padding:8px 20px;color:#EDE8DC!important;font-size:.88rem;font-weight:500;text-decoration:none!important;border-bottom:2px solid transparent;transition:all .15s;letter-spacing:.01em;outline:none;}a.nav-link:hover{color:#FF8F5C!important;border-bottom-color:#FF6B2B;}a.nav-link.active{color:#FF8F5C!important;font-weight:700;border-bottom-color:#FF6B2B;}</style><div class="nav-bar"><a href="/" target="_self" style="text-decoration:none"><svg width="150" height="22" viewBox="0 0 150 22" style="overflow:visible;"><defs><linearGradient id="ng2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#FF6B2B"/><stop offset="100%" stop-color="#C96FFF"/></linearGradient></defs><text x="0" y="17" font-family="Inter,sans-serif" font-size="15" font-weight="800" letter-spacing="-0.3" fill="url(#ng2)">Frontier Lens</text></svg></a><div class="nav-links"><a href="/Seed" target="_self" class="nav-link">Seed</a><a href="/Evaluate" target="_self" class="nav-link">Evaluate</a><a href="/Weaknesses" target="_self" class="nav-link">Weaknesses</a><a href="/Generate_Review" target="_self" class="nav-link active">Generate</a><a href="/Dataset" target="_self" class="nav-link">Dataset</a><a href="/Headroom" target="_self" class="nav-link">Headroom</a></div></div>
 """, unsafe_allow_html=True)
 # ── Persistent role selector (shown on every page) ───────────────────────
 _current_role = st.session_state.get("role", "Viewer")
@@ -189,7 +189,13 @@ else:
                     lbl = (f"L{lvl} hint…" if event == "hint_generated"
                            else f"L{lvl} sample {fields.get('sample_index',0)+1}/{k_val}")
                     prog.progress(pct, text=f"Step {_done_ops[0]}/{_total_ops} — {lbl}")
-                log_lines.append(_fmt_rescue(event, **fields))
+                # Questions run concurrently, so tag each line with its source.
+                _line = _fmt_rescue(event, **fields)
+                _tag = fields.get("question_id") or fields.get("source_id")
+                if _tag:
+                    _nl = "\n" if _line.startswith("\n") else ""
+                    _line = f"{_nl}[{str(_tag)[:8]}] {_line.lstrip(chr(10))}"
+                log_lines.append(_line)
                 log_box.code("\n".join(log_lines[-30:]), language=None)
 
             rescue_results = rescue_with_hints(
@@ -365,7 +371,13 @@ else:
                     _done_ops[0] += 1
                     pct = min(_done_ops[0] / max(_total_ops, 1), 1.0)
                     prog.progress(pct, text=f"Step {_done_ops[0]}/{_total_ops}")
-                log_lines2.append(_fmt_aug(event, **fields))
+                # Questions run concurrently, so tag each line with its source.
+                _line = _fmt_aug(event, **fields)
+                _tag = fields.get("question_id") or fields.get("source_id")
+                if _tag:
+                    _nl = "\n" if _line.startswith("\n") else ""
+                    _line = f"{_nl}[{str(_tag)[:8]}] {_line.lstrip(chr(10))}"
+                log_lines2.append(_line)
                 log_box2.code("\n".join(log_lines2[-30:]), language=None)
 
             if use_review:

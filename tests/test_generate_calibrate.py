@@ -1,3 +1,5 @@
+import itertools
+
 from frontier_lens.agent.tools import handle, tools_for
 from frontier_lens.generate import _store_candidate, estimate_pass_rate
 from frontier_lens.seed import seed
@@ -18,11 +20,10 @@ def test_estimate_pass_rate_learnable_band():
     assert stats["pass_rate"] == 0.0
     assert not stats["in_learnable_band"]
 
-    n = {"i": 0}
+    calls = itertools.count(1)  # atomic under concurrent sampling
 
     def mixed(_prompt: str) -> str:
-        n["i"] += 1
-        return "FINAL: 3" if n["i"] % 2 == 0 else "FINAL: 0"
+        return "FINAL: 3" if next(calls) % 2 == 0 else "FINAL: 0"
 
     stats = estimate_pass_rate("x", "3", complete_fn=mixed, k=8)
     assert stats["pass_rate"] == 0.5

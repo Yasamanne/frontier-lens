@@ -6,7 +6,8 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # Copy dependency files first for layer caching
-COPY pyproject.toml uv.lock ./
+# (README.md is required: pyproject.toml declares readme = "README.md" and hatchling reads it)
+COPY pyproject.toml uv.lock README.md ./
 
 # Copy source so the package can be installed
 COPY src/ ./src/

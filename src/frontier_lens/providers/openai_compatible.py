@@ -13,6 +13,7 @@ from openai import (
     RateLimitError,
 )
 
+from frontier_lens.parallel import call_slot
 from frontier_lens.providers.base import Completion
 
 RETRY_ATTEMPTS = 4
@@ -63,7 +64,8 @@ class OpenAICompatibleProvider:
                     kwargs["extra_body"] = extra_body
                 if response_format:
                     kwargs["response_format"] = response_format
-                resp = self.client.chat.completions.create(**kwargs)
+                with call_slot():
+                    resp = self.client.chat.completions.create(**kwargs)
                 return resp.choices[0].message.content or "", resp.usage
             except Exception as exc:
                 if not _retryable(exc) or attempt + 1 == RETRY_ATTEMPTS:
