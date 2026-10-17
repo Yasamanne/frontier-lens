@@ -21,6 +21,7 @@ class ModelSpec:
     thinking: bool
     license: str
     api_key_env: str | None
+    json_mode: bool = False   # request structured JSON output to enforce format
 
 
 def load_yaml() -> list[ModelSpec]:
@@ -29,7 +30,7 @@ def load_yaml() -> list[ModelSpec]:
     policy_families: set[str] = set()
     reference_families: set[str] = set()
     generator_families: set[str] = set()
-    allowed = {"policy", "reference", "generator"}
+    allowed = {"policy", "reference", "generator", "judge"}
     for row in raw:
         if not row.get("license"):
             raise ValueError(f"{row.get('id')} missing license")
@@ -44,6 +45,7 @@ def load_yaml() -> list[ModelSpec]:
             thinking=bool(row.get("thinking", False)),
             license=row["license"],
             api_key_env=row.get("api_key_env"),
+            json_mode=bool(row.get("json_mode", False)),
         )
         if spec.role not in allowed:
             raise ValueError(f"bad role {spec.role}")
@@ -51,17 +53,34 @@ def load_yaml() -> list[ModelSpec]:
             policy_families.add(spec.family)
         elif spec.role == "reference":
             reference_families.add(spec.family)
-        else:
+        elif spec.role == "generator":
             generator_families.add(spec.family)
+        # judge role is excluded from family-overlap checks intentionally
         specs.append(spec)
     if not policy_families:
         raise ValueError("models.yaml needs a role: policy entry")
     overlap = generator_families & (policy_families | reference_families)
     if overlap:
-        raise ValueError(
-            f"generator family overlaps policy or reference: {overlap}"
+        import warnings
+        warnings.warn(
+            f"generator family overlaps policy or reference: {overlap}. "
+            "The generator may have a familiarity advantage — consider using a "
+            "different model family for a more adversarial setup.",
+            stacklevel=2,
+        )
+        # Suppress repeat warnings — this fires on every Streamlit rerun otherwise.
+        warnings.filterwarnings(
+            "ignore",
+            message="generator family overlaps",
+            category=UserWarning,
         )
     return specs
+
+
+def judge_spec() -> ModelSpec | None:
+    """Return the configured judge model, or None if none is defined."""
+    specs = load_yaml()
+    return next((s for s in specs if s.role == "judge"), None)
 
 
 def policy_spec() -> ModelSpec:

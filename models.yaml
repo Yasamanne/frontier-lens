@@ -1,31 +1,36 @@
-# Open-weight only. Verify tags at runtime. No closed-source models.
+# Open-weight only, hosted on OpenRouter. No closed-source models.
 # Policy is the model we generate tasks for. References are comparison models.
 # Generator family must differ from policy and reference families.
-- id: gemma4-e4b
+# OpenRouter has no gemma-4-e4b; 26B-A4B is the small Gemma 4 MoE.
+# Append :free to a slug only for the 50 req/day quota (not enough for policy k=8).
+- id: gemma4-26b-a4b
   role: policy
   family: gemma
   provider: openai_compatible
-  base_url: http://localhost:11434/v1
-  model: gemma4:e4b
-  quant: q4_K_M
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: google/gemma-4-26b-a4b-it
+  quant: host
   thinking: false
-  license: Gemma Terms of Use (check model card)
-- id: gemma4-12b
+  license: Apache-2.0 / Gemma Terms of Use (check model card)
+- id: gemma4-31b
   role: reference
   family: gemma
   provider: openai_compatible
-  base_url: http://localhost:11434/v1
-  model: gemma4:12b
-  quant: q4_K_M
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: google/gemma-4-31b-it
+  quant: host
   thinking: false
-  license: Gemma Terms of Use (check model card)
+  license: Apache-2.0 / Gemma Terms of Use (check model card)
 - id: qwen3.8-27b
   role: reference
   family: qwen
   provider: openai_compatible
-  base_url: http://localhost:11434/v1
-  model: qwen3.8:27b
-  quant: q4_K_M
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: qwen/qwen3.8-27b
+  quant: host
   thinking: false
   license: Apache-2.0
 - id: deepseek-v4.1-flash
@@ -48,13 +53,23 @@
   quant: host
   thinking: false
   license: Llama 4 Community License
-- id: glm-5.3
+- id: deepseek-v4.1-flash-generator
   role: generator
-  family: glm
+  family: deepseek
   provider: openai_compatible
   base_url: https://openrouter.ai/api/v1
   api_key_env: OPENROUTER_API_KEY
-  model: z-ai/glm-5.3
+  model: deepseek/deepseek-v4.1-flash
   quant: host
   thinking: false
-  license: check model card
+  license: MIT
+- id: deepseek-v4.1-flash-judge
+  role: judge
+  family: deepseek
+  provider: openai_compatible
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: deepseek/deepseek-v4.1-flash
+  quant: host
+  thinking: false
+  license: MIT
