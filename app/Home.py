@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -163,6 +164,17 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── Missing env-var banner ────────────────────────────────────────────────
+_missing_keys = [k for k in ("OPENROUTER_API_KEY",) if not os.getenv(k)]
+if _missing_keys:
+    st.warning(
+        f"**Missing env vars:** `{'`, `'.join(_missing_keys)}`  \n"
+        "Live LLM calls will fail. "
+        "Fixture-replay and Viewer mode still work.  \n"
+        "Set them in `.env` and restart, or pass `--env-file .env` to Docker.",
+        icon="⚠️",
+    )
 
 # ── Hero card ─────────────────────────────────────────────────────────────
 st.markdown("""
