@@ -186,7 +186,16 @@ def promote(
     hard: bool,
     note: str = "",
     kind: str = "audit",
+    edited_stem: str | None = None,
+    edited_code: str | None = None,
 ) -> None:
+    """Approve or reject a candidate.
+
+    If *edited_stem* or *edited_code* are provided (non-empty and different from
+    the stored values), the candidate row is updated before promotion so the
+    edited version is what lands in the questions table.  The sandbox is always
+    re-run on the final code so the gold key is fresh.
+    """
     engine = get_engine()
     with engine.begin() as conn:
         cand = conn.execute(
@@ -196,6 +205,17 @@ def promote(
             raise RuntimeError("unknown candidate")
         if cand["status"] == "auto_rejected":
             raise RuntimeError("auto-rejected candidates cannot be promoted")
+
+        # Apply SME edits to the candidate row before proceeding.
+        # Falls back to the stored value if the edit is empty or unchanged.
+        stem_to_use = edited_stem.strip() if edited_stem and edited_stem.strip() else cand["stem"]
+        code_to_use = edited_code.strip() if edited_code and edited_code.strip() else cand["code"]
+        if stem_to_use != cand["stem"] or code_to_use != cand["code"]:
+            conn.execute(
+                text("UPDATE candidates SET stem=:s, code=:c WHERE id=:id"),
+                {"s": stem_to_use, "c": code_to_use, "id": candidate_id},
+            )
+
         conn.execute(
             text(
                 """
@@ -225,7 +245,7 @@ def promote(
             )
             return
         files = json.loads(cand["input_files_json"] or "{}")
-        result = execute(cand["lang"], cand["code"], files, twice=True)
+        result = execute(cand["lang"], code_to_use, files, twice=True)
         if not result.ok:
             conn.execute(
                 text(
@@ -234,7 +254,7 @@ def promote(
                 {"id": candidate_id, "r": result.reason},
             )
             return
-        qid = item_id("generated", {"cid": candidate_id}, cand["code"], files)
+        qid = item_id("generated", {"cid": candidate_id}, code_to_use, files)
         split = cand["rl_split"] or "train"
         conn.execute(
             text(
@@ -256,8 +276,8 @@ def promote(
                 "band": cand["band"],
                 "split": split,
                 "params": json.dumps({"candidate": candidate_id}),
-                "stem": cand["stem"],
-                "code": cand["code"],
+                "stem": stem_to_use,
+                "code": code_to_use,
                 "lang": cand["lang"],
                 "files": cand["input_files_json"],
                 "key": result.stdout,

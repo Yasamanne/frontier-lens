@@ -60,7 +60,14 @@ def _extract_json(text: str) -> dict:
     raise ValueError(f"no valid JSON object found in response ({len(text)} chars)")
 
 
-MAX_FIX_ITERATIONS = 3   # mk0 uses 4; 3 is enough for our shorter questions
+def _label_or_infer(value: str | None, field: str) -> str:
+    """Return the value if set, else a prompt placeholder telling the model to infer it."""
+    if value and value.strip():
+        return value.strip()
+    return f"(unknown — infer {field} from the seed question)"
+
+
+MAX_FIX_ITERATIONS = 3   # 3 fix iterations is enough for our shorter questions
 
 SIMILAR_REVIEW_PROMPT = """\
 You are a strict question quality reviewer. Score the GENERATED question on
@@ -143,9 +150,12 @@ Apply the fix instructions and produce an improved question.
 Keep what was good; fix only what the reviewer flagged.
 
 Return JSON only:
-{{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true}}
+{{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true, "topic": "...", "band": "standard" or "hard"}}
 Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only.
+If topic or band are empty or unknown, infer them from the seed question:
+  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units.
+  band must be one of: standard, hard.
 """
 
 _LEVEL_INSTRUCTIONS: dict[int, str] = {
@@ -212,9 +222,12 @@ The new question must have a unique, deterministic answer verifiable by running 
 The policy model should sometimes pass and sometimes fail (0 < pass_rate < 1).
 
 Return JSON only:
-{{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true}}
+{{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true, "topic": "...", "band": "standard" or "hard"}}
 Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
+If Topic or Band above are empty or unknown, infer them from the seed question:
+  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units.
+  band must be one of: standard, hard.
 """
 
 SIMILAR_AGENT_SYSTEM = """\
@@ -242,7 +255,10 @@ RULES:
   - The answer must be a single bare value (numeric or short string).
   - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
   - Python: only math, itertools, collections, decimal. No network, no external files.
-  - topic and band will be auto-filled — you do NOT need to include them in submit_candidate.
+  - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_candidate.
+    topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units.
+    band must be one of: standard, hard.
+  - If TOPIC and BAND are already set above, you do NOT need to include them in submit_candidate.
 """
 
 ONE_SHOT_TRAIN = """You write a NEW original train item for open-weight models.
@@ -444,6 +460,11 @@ def _store_candidate(
         lang = payload.get("lang") or "python"
         files = payload.get("input_files") or {}
         numeric = bool(payload.get("numeric", True))
+        # Infer topic/band from model response when the caller didn't supply them
+        if not topic:
+            topic = payload.get("topic") or ""
+        if not band:
+            band = payload.get("band") or ""
         result = execute(lang, code, files, twice=True)
         if log_fn:
             log_fn("sandbox_result", ok=result.ok, reason=result.reason if not result.ok else None)
@@ -684,8 +705,8 @@ def rescue_with_hints(
 ) -> list[dict]:
     """For each pass@k=0 question, apply up to *max_hints* progressive hint levels.
 
-    Based on the mk0 tutoring pattern: the generator is given the gold answer so
-    hints can be precisely targeted, but is explicitly told not to reveal it.
+    The generator is given the gold answer so hints can be precisely targeted,
+    but is explicitly told not to reveal it.
 
       L1 → domain / conceptual framing only
       L2 → specific technique or property (not how to apply it)
@@ -944,7 +965,9 @@ def generate_similar_questions(
             )
             _rej = _get_rejected_variants(q["id"])
             prompt = SIMILAR_QUESTION_PROMPT.format(
-                topic=q["topic"], band=q["band"], stem=q["stem"],
+                topic=_label_or_infer(q.get("topic"), "topic"),
+                band=_label_or_infer(q.get("band"), "band"),
+                stem=q["stem"],
                 seed_key=q.get("key", ""),
                 prior_variants="(one-shot mode — no prior variants tracked)",
                 rejected_variants="\n".join(f"Rejected {i+1}: {s[:200]}" for i, s in enumerate(_rej)) or "(none)",
@@ -1043,8 +1066,8 @@ def _run_similar_agent(
         if rejected else "(none — no prior rejections for this seed)"
     )
     system_prompt = SIMILAR_AGENT_SYSTEM.format(
-        topic=source_q["topic"],
-        band=source_q["band"],
+        topic=_label_or_infer(source_q.get("topic"), "topic"),
+        band=_label_or_infer(source_q.get("band"), "band"),
         stem=(source_q.get("stem") or "")[:1200],
         max_loops=max_loops,
     ) + f"\n\nSME-REJECTED VARIANTS FOR THIS SEED (avoid these patterns entirely):\n{rejected_block}"
@@ -1082,10 +1105,14 @@ def _run_similar_agent(
             args = json.loads(call.function.arguments or "{}")
             tool_name = call.function.name
 
-            # Enforce topic/band from source question — agent can't override
+            # Enforce topic/band from source question when known; otherwise let
+            # the agent's inferred values stand (they'll be read from the payload
+            # in _store_candidate).
             if tool_name == "submit_candidate":
-                args["topic"] = source_q["topic"]
-                args["band"] = source_q["band"]
+                if source_q.get("topic"):
+                    args["topic"] = source_q["topic"]
+                if source_q.get("band"):
+                    args["band"] = source_q["band"]
                 args["_mode"] = "similar_augment"
 
             _log(
@@ -1310,7 +1337,7 @@ def generate_similar_with_review(
     calibration_k: int | None = None,
     log_fn=None,
 ) -> list[dict]:
-    """mk0-style Generate → Review → Fix loop for similar question generation.
+    """Generate → Review → Fix loop for similar question generation.
 
     For each seed question:
     1. Generator (generator model, knows seed's gold answer + prior variants)
@@ -1385,7 +1412,9 @@ def generate_similar_with_review(
 
                 if not is_fix:
                     prompt = SIMILAR_QUESTION_PROMPT.format(
-                        topic=q["topic"], band=q["band"], stem=q["stem"],
+                        topic=_label_or_infer(q.get("topic"), "topic"),
+                        band=_label_or_infer(q.get("band"), "band"),
+                        stem=q["stem"],
                         seed_key=q.get("key", ""),
                         prior_variants=_prior_block(prior_stems),
                         rejected_variants=_rejected_block(rejected_stems),
@@ -1449,7 +1478,8 @@ def generate_similar_with_review(
                     stem=stem_gen, code=code_gen, lang=lang_gen,
                     computed_key=computed_key,
                     seed_stem=q["stem"], seed_key=q.get("key", ""),
-                    band=q["band"], prior_stems=prior_stems,
+                    band=_label_or_infer(q.get("band"), "band"),
+                    prior_stems=prior_stems,
                     rejected_stems=rejected_stems,
                     provider=judge_provider, model=judge.model,
                 )
