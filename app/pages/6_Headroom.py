@@ -216,7 +216,7 @@ for mode, (label, _desc) in MODE_META.items():
         "Avg pass rate":  avg_pr,
     })
 
-st.dataframe(breakdown_rows, use_container_width=True, hide_index=True)
+st.dataframe(breakdown_rows, width="stretch", hide_index=True)
 
 # ── Rescue detail ─────────────────────────────────────────────────────────
 rescue_cands = [c for c in linked if c["generator_mode"] == "light_hint"]
@@ -264,7 +264,7 @@ for topic, band in all_cells:
     })
 
 if cell_rows:
-    st.dataframe(cell_rows, use_container_width=True, hide_index=True)
+    st.dataframe(cell_rows, width="stretch", hide_index=True)
 
 # ── Rejection breakdown ───────────────────────────────────────────────────
 rej_linked = [c for c in linked if c["status"] in rej_statuses]
@@ -277,7 +277,7 @@ if rej_linked:
     )
     st.dataframe(
         [{"Reason": r, "Count": n} for r, n in reasons.most_common()],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -303,6 +303,6 @@ if pass_rates:
         if buckets[i] > 0
     ]
     if dist_rows:
-        st.dataframe(dist_rows, use_container_width=True, hide_index=True)
+        st.dataframe(dist_rows, width="stretch", hide_index=True)
     avg_overall = sum(pass_rates) / len(pass_rates)
     st.caption(f"Mean pass rate across {len(pass_rates)} new candidates: **{avg_overall:.2f}**")

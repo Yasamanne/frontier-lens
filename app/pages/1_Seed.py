@@ -75,7 +75,7 @@ with tab_auto:
             total += n
 
         table_rows = [{"topic": t, **counts} for t, counts in sorted(by_topic.items())]
-        st.dataframe(table_rows, use_container_width=True)
+        st.dataframe(table_rows, width="stretch")
         st.caption(f"**{total} seed questions** across {len(by_topic)} topics.")
     else:
         st.warning("No seed questions in the database. Run **Generate Seeds** below.")
@@ -110,7 +110,7 @@ with tab_auto:
                 "L3": str(block.get("3", "—")),
                 "measured": block.get("measured", False),
             })
-        st.dataframe(rows_cal, use_container_width=True)
+        st.dataframe(rows_cal, width="stretch")
 
     # ── Step 1: Calibrate ─────────────────────────────────────────────────
     st.divider()
@@ -309,6 +309,9 @@ stem,key,topic,difficulty,solution_steps
         )
 
     # ── File uploader ─────────────────────────────────────────────────────
+    if _msg := st.session_state.pop("upload_import_msg", None):
+        st.success(_msg)
+
     uploaded_file = st.file_uploader(
         "Upload questions (.csv or .jsonl)",
         type=["csv", "jsonl"],
@@ -346,7 +349,7 @@ stem,key,topic,difficulty,solution_steps
                     st.caption(
                         "These questions look identical after normalising case, "
                         "whitespace, and LaTeX. Both are included in the import by default. "
-                        "Use the button below to skip the second occurrence of each pair."
+                        "Choose below whether to skip the second occurrence of each pair."
                     )
                     pair_rows = []
                     for i, p in enumerate(result.fuzzy_pairs, 1):
@@ -358,32 +361,68 @@ stem,key,topic,difficulty,solution_steps
                             "Key B": p.row_b["key"],
                             "Same key?": "✅" if p.same_key else "⚠ different",
                         })
-                    st.dataframe(pair_rows, use_container_width=True)
+                    st.dataframe(pair_rows, width="stretch")
 
-                    # Store the choice in session state so it persists across reruns
-                    dedup_choice = st.session_state.get("fuzzy_dedup_choice", "keep_all")
+                    # Keyed per uploaded file so a choice never carries over to the next file
+                    choice_key = f"fuzzy_dedup_{uploaded_file.file_id}"
+                    choice_labels = {
+                        "keep_all": "Import all rows (keep both variants)",
+                        "skip_b": "Skip second occurrence of each near-duplicate",
+                    }
+                    n_skip = len({p.row_b["id"] for p in result.fuzzy_pairs})
+                    n_after = {"keep_all": len(result.rows), "skip_b": len(result.rows) - n_skip}
+
+                    # on_click runs before the rerun, so the buttons render disabled immediately
+                    def _choose(choice: str) -> None:
+                        st.session_state[choice_key] = choice
+                        st.toast(f"{choice_labels[choice]} — {n_after[choice]} row(s) selected for import", icon="✅")
+
+                    def _reset_choice() -> None:
+                        st.session_state.pop(choice_key, None)
+                        st.toast("Near-duplicate choice cleared", icon="🔄")
+
+                    chosen = st.session_state.get(choice_key)
                     col_keep, col_skip = st.columns(2)
-                    if col_keep.button("Import all rows (keep both variants)", key="fuzzy_keep"):
-                        st.session_state["fuzzy_dedup_choice"] = "keep_all"
-                        dedup_choice = "keep_all"
-                    if col_skip.button("Skip second occurrence of each near-duplicate", key="fuzzy_skip"):
-                        st.session_state["fuzzy_dedup_choice"] = "skip_b"
-                        dedup_choice = "skip_b"
-
-                    if dedup_choice == "skip_b":
-                        st.info(
-                            f"Will skip {len(result.fuzzy_pairs)} near-duplicate(s). "
-                            f"{len(result.rows) - len(result.fuzzy_pairs)} rows will be imported."
+                    for col, choice in ((col_keep, "keep_all"), (col_skip, "skip_b")):
+                        col.button(
+                            choice_labels[choice],
+                            key=f"{choice_key}_{choice}",
+                            on_click=_choose,
+                            args=(choice,),
+                            disabled=chosen is not None,
+                            type="primary" if chosen == choice else "secondary",
+                            width="stretch",
                         )
-                    else:
-                        st.info(f"Will import all {len(result.rows)} rows (both variants of each pair).")
+                    if chosen:
+                        st.success(f"Choice saved: **{choice_labels[chosen]}**")
+                        st.button("🔄 Change choice", key=f"{choice_key}_reset", on_click=_reset_choice)
+                    dedup_choice = chosen or "keep_all"
             else:
                 dedup_choice = "keep_all"
 
+            # Apply fuzzy dedup choice before the summary and preview so both reflect it
+            if dedup_choice == "skip_b":
+                skip_ids = {p.row_b["id"] for p in result.fuzzy_pairs}
+                base_rows = [r for r in result.rows if r["id"] not in skip_ids]
+            else:
+                base_rows = result.rows
+
+            n_skipped_fuzzy = len(result.rows) - len(base_rows)
+            st.info(
+                f"**{len(base_rows)} row(s) selected for import**"
+                + (f" — {n_skipped_fuzzy} near-duplicate(s) skipped" if n_skipped_fuzzy else "")
+                + (
+                    "; rows already in the DB are skipped unless "
+                    "*Replace existing uploaded questions* is checked"
+                    if result.n_already_in_db else ""
+                )
+                + "."
+            )
+
             # Preview
-            has_steps = any(r.get("solution_steps") for r in result.rows[:10])
+            has_steps = any(r.get("solution_steps") for r in base_rows[:10])
             preview = []
-            for r in result.rows[:10]:
+            for r in base_rows[:10]:
                 row_preview = {
                     "stem": r["stem"][:70] + ("…" if len(r["stem"]) > 70 else ""),
                     "key": r["key"],
@@ -393,16 +432,9 @@ stem,key,topic,difficulty,solution_steps
                 if has_steps:
                     row_preview["solution_steps"] = (r.get("solution_steps") or "")[:60]
                 preview.append(row_preview)
-            st.dataframe(preview, use_container_width=True)
-            if len(result.rows) > 10:
-                st.caption(f"Showing 10 of {len(result.rows)} rows.")
-
-            # Apply fuzzy dedup choice
-            if dedup_choice == "skip_b":
-                skip_ids = {p.row_b["id"] for p in result.fuzzy_pairs}
-                base_rows = [r for r in result.rows if r["id"] not in skip_ids]
-            else:
-                base_rows = result.rows
+            st.dataframe(preview, width="stretch")
+            if len(base_rows) > 10:
+                st.caption(f"Showing 10 of {len(base_rows)} rows.")
 
             # Optional subsampling
             use_sample = st.checkbox(
@@ -431,7 +463,8 @@ stem,key,topic,difficulty,solution_steps
 
             if st.button("⬆ Import into database", type="primary", disabled=(role != "Organizer")):
                 n = import_rows(_seed_rows, replace=replace, filename=uploaded_file.name)
-                st.success(
+                # Stash the message: st.rerun() would otherwise wipe it before it renders
+                st.session_state["upload_import_msg"] = (
                     f"Imported **{n}** new question(s) from `{uploaded_file.name}`. "
                     "They appear in the Evaluate tab immediately."
                 )
@@ -460,7 +493,7 @@ stem,key,topic,difficulty,solution_steps
             ).all()
         st.dataframe(
             [{"file": r[0], "questions": r[1]} for r in fname_rows],
-            use_container_width=True,
+            width="stretch",
         )
         if st.button(f"🗑 Delete all {n_uploaded} uploaded questions", disabled=(role != "Organizer")):
             from frontier_lens.upload import delete_uploaded

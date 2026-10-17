@@ -367,7 +367,7 @@ if st.session_state.get("eval_state") == "waiting_choice":
             "New (needs scoring)": new_count,
             f"k (requested)": k_requested,
         })
-    st.dataframe(model_rows, use_container_width=True)
+    st.dataframe(model_rows, width="stretch")
 
     if len(new_qids) == 0:
         st.success(

@@ -137,7 +137,7 @@ else:
         for key, label in MODE_LABELS.items():
             row[label.split("\n")[0]] = f"{agg.get(key, 0):.0%}"
         rows.append(row)
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
 
     for cell in fa_cells:
         label = f"📍 {cell['topic']} / {cell['band']}  —  dominant: {cell['dominant_mode'].replace('_frac','').replace('_',' ')}"

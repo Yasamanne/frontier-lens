@@ -133,7 +133,7 @@ with tab_rl:
                     round(int(q["n_correct"]) / max(int(q["n"]) - int(q.get("n_unparsable", 0)), 1), 3)),
                 "stem": (q["stem"] or "")[:100],
             } for q in rl_qs],
-            use_container_width=True,
+            width="stretch",
         )
         # CSV download
         import csv as _csv, io as _io
@@ -176,7 +176,7 @@ with tab_rl:
                 "pass_rate": round(c["policy_pass_rate"] or 0, 3),
                 "stem": (c["stem"] or "")[:100],
             } for c in approved],
-            use_container_width=True,
+            width="stretch",
         )
         out2 = _io.StringIO()
         w2 = _csv.DictWriter(out2, fieldnames=["id","topic","band","stem","key","pass_rate","generator_mode"])
@@ -263,7 +263,7 @@ with tab_sft:
                     "best_hint_tried": hint_map.get(q["id"], "(no hint attempted)")[:100],
                     "stem": (q["stem"] or "")[:100],
                 } for q in unrescued],
-                use_container_width=True,
+                width="stretch",
             )
 
             # Build SFT CSV: original responses from attempts table + best hint stem

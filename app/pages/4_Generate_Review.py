@@ -114,7 +114,7 @@ else:
         [{"id": q["id"][:12], "topic": q["topic"], "band": q["band"],
           "k": q["n"], "stem (preview)": (q["stem"] or "")[:120]}
          for q in dead_qs],
-        use_container_width=True,
+        width="stretch",
     )
 
     if role == "Organizer":
@@ -215,7 +215,7 @@ else:
                   "hint_L2": (r["hint_rounds"][1]["hint"] if len(r.get("hint_rounds",[])) > 1 else "")[:60],
                   "hint_L3": (r["hint_rounds"][2]["hint"] if len(r.get("hint_rounds",[])) > 2 else "")[:60]}
                  for r in rescue_results],
-                use_container_width=True,
+                width="stretch",
             )
             if unrescued > 0:
                 from frontier_lens.generate import generate_rescue_sft_csv
@@ -248,7 +248,7 @@ else:
           "pass_rate": f"{int(q['n_correct'])/int(q['n']):.0%}",
           "stem (preview)": (q["stem"] or "")[:120]}
          for q in rl_qs],
-        use_container_width=True,
+        width="stretch",
     )
 
     if role == "Organizer":
@@ -405,7 +405,7 @@ else:
                   "status": r["status"],
                   "pass_rate": round(r["pass_rate"], 3) if r["pass_rate"] is not None else None}
                  for r in aug_results],
-                use_container_width=True,
+                width="stretch",
             )
     else:
         st.info("Switch Role to **Organizer** to generate similar questions.")
@@ -479,7 +479,7 @@ else:
                 sme_note = st.text_input("Note (optional)", key=f"sme-note-{c['id']}")
                 btn_approve, btn_reject = st.columns(2)
                 with btn_approve:
-                    if st.button("✅ Approve", key=f"sme-approve-{c['id']}", use_container_width=True):
+                    if st.button("✅ Approve", key=f"sme-approve-{c['id']}", width="stretch"):
                         try:
                             promote(
                                 c["id"], "hard_item",
@@ -493,7 +493,7 @@ else:
                         except Exception as exc:
                             st.error(str(exc))
                 with btn_reject:
-                    if st.button("❌ Reject", key=f"sme-reject-{c['id']}", use_container_width=True):
+                    if st.button("❌ Reject", key=f"sme-reject-{c['id']}", width="stretch"):
                         try:
                             promote(
                                 c["id"], "rejected",
