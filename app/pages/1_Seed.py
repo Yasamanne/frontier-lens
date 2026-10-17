@@ -1,14 +1,17 @@
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-for _name in list(sys.modules):
-    if _name == "frontier_lens" or _name.startswith("frontier_lens."):
-        del sys.modules[_name]
+# Dev only: drop cached frontier_lens modules so edits under src/ load on the
+# next rerun. Sessions run in threads that share sys.modules, so purging while
+# another session imports raises KeyError; keep it off outside local dev.
+if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
+    for _name in list(sys.modules):
+        if _name == "frontier_lens" or _name.startswith("frontier_lens."):
+            del sys.modules[_name]
 
 import json
-import os
-import subprocess
 
 import streamlit as st
 
@@ -35,14 +38,38 @@ role = st.session_state.get("role", "Viewer")
 
 from sqlalchemy import text
 
+from frontier_lens import job_panel, jobs
 from frontier_lens.calibrate import GRIDS, KNOBS_PATH, PRIMARY, load_manifest
-from frontier_lens.config import ROOT
 from frontier_lens.db import get_engine
 
 st.title("Seed")
 st.caption("Step 1 of the pipeline — build the question bank the model will be evaluated on.")
 
 engine = get_engine()
+
+# Calibration and seeding run in a detached process (frontier_lens.jobs), so
+# refreshing or leaving this page does not stop them. Seeding reads the knobs
+# calibration writes, so only one of the two runs at a time.
+_seed_jobs = {r["kind"]: r for r in jobs.active(("calibrate", "seed"))}
+
+
+def _render_calibrate_result(row: dict) -> None:
+    done = [r["topic"] for r in jobs.results(row)["items"]]
+    if row["status"] == "complete":
+        st.success(
+            "Calibration complete. Knobs written to `data/level_knobs.json`. Now regenerate seeds."
+        )
+    elif done:
+        st.caption(f"Calibrated so far (already saved to the knobs file): {', '.join(done)}")
+
+
+def _render_seed_result(row: dict) -> None:
+    items = jobs.results(row)["items"]
+    if row["status"] == "complete" and items:
+        st.success(
+            f"✅ Seeded {items[0]['inserted']} questions. Go to **Evaluate** (page 2) to run the model."
+        )
+
 tab_auto, tab_upload = st.tabs(["🌱 Auto-generate", "📂 Upload CSV"])
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -137,35 +164,21 @@ with tab_auto:
     n_cal_calls = len(cal_topics) * 6 * cal_k
     st.caption(f"≈ {n_cal_calls} API calls for the selected configuration.")
 
-    if st.button("Run calibration", disabled=(role != "Organizer" or not cal_topics)):
-        if role != "Organizer":
-            st.error("Set Role to Organizer on Home to run calibration.")
-        else:
-            cmd = [
-                sys.executable, "-m", "frontier_lens.calibrate",
-                "--live", "--k", str(cal_k),
-                "--topics", *cal_topics,
-            ]
-            st.write("Running:", " ".join(cmd))
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            proc = subprocess.Popen(
-                cmd, cwd=str(ROOT),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=env,
-            )
-            log_box = st.empty()
-            chunks: list[str] = []
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                chunks.append(line if line.endswith("\n") else line + "\n")
-                log_box.code("".join(chunks)[-2000:])
-            code = proc.wait()
-            if code == 0:
-                st.success("Calibration complete. Knobs written to `data/level_knobs.json`. Now regenerate seeds.")
-                st.rerun()
-            else:
-                st.error(f"Calibration failed (exit {code}).")
+    if st.button(
+        "Run calibration",
+        disabled=role != "Organizer" or not cal_topics or bool(_seed_jobs),
+        help="Runs in the background; disabled while calibration or seeding is running.",
+    ):
+        st.session_state["calibrate_job_pick"] = jobs.start(
+            "calibrate", {"topics": list(cal_topics), "k": int(cal_k)}, planned=len(cal_topics),
+        )
+        st.rerun()
+
+    job_panel.job_section(
+        "calibrate", role, "topics", _render_calibrate_result,
+        running=_seed_jobs.get("calibrate"), blocked=bool(_seed_jobs),
+        label="Recent calibration jobs",
+    )
 
     if role != "Organizer":
         st.caption("Switch Role to **Organizer** on Home to run calibration.")
@@ -182,44 +195,19 @@ with tab_auto:
 
     force = st.checkbox("Force rebuild (delete existing seeds)", value=bool(rows))
 
-    if st.button("Generate seeds", type="primary", disabled=(role != "Organizer")):
-        if role != "Organizer":
-            st.error("Set Role to Organizer on Home to generate seeds.")
-        else:
-            cmd = [sys.executable, "-m", "frontier_lens.seed"]
-            if force:
-                cmd.append("--force")
-            st.write("Running:", " ".join(cmd))
+    if st.button(
+        "Generate seeds", type="primary",
+        disabled=role != "Organizer" or bool(_seed_jobs),
+        help="Runs in the background; disabled while calibration or seeding is running.",
+    ):
+        st.session_state["seed_job_pick"] = jobs.start("seed", {"force": bool(force)}, planned=1)
+        st.rerun()
 
-            prog = st.progress(0.0, text="Seeding…")
-            log_box = st.empty()
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            proc = subprocess.Popen(
-                cmd, cwd=str(ROOT),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=env,
-            )
-            chunks: list[str] = []
-            n_seeded = 0
-            TARGET = 182
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                chunks.append(line if line.endswith("\n") else line + "\n")
-                if "seeded" in line:
-                    try:
-                        n_seeded = int(line.strip().split()[1])
-                        prog.progress(min(n_seeded / TARGET, 1.0), text=f"Seeded {n_seeded}/{TARGET} items")
-                    except (IndexError, ValueError):
-                        pass
-                log_box.code("".join(chunks)[-2000:])
-            code = proc.wait()
-            prog.progress(1.0, text="Done")
-            if code == 0:
-                st.success(f"✅ Seeded {n_seeded} questions. Go to **Evaluate** (page 2) to run the model.")
-                st.rerun()
-            else:
-                st.error(f"Seeding failed (exit {code}).")
+    job_panel.job_section(
+        "seed", role, "step", _render_seed_result,
+        running=_seed_jobs.get("seed"), blocked=bool(_seed_jobs), needs_key=False,
+        label="Recent seeding jobs",
+    )
 
     if role != "Organizer":
         st.caption("Switch Role to **Organizer** on Home to generate seeds.")

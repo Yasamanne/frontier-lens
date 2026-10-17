@@ -199,7 +199,7 @@ def rescue_with_hints(
                  pass_rate=final_pass_rate, rl_suitable=False,
                  rescue_level=None, n_hints_tried=len(hint_rounds))
 
-        return {
+        result = {
             "question_id": qid,
             "topic": q["topic"], "band": q["band"],
             "stem_original": q["stem"], "gold_key": q["key"],
@@ -211,6 +211,9 @@ def rescue_with_hints(
             "rescue_level": rescue_level,
             "hint": hint_rounds[-1]["hint"] if hint_rounds else "",
         }
+        # Lets a background job save each question as it finishes (resume).
+        _log("rescue_question_done", question_id=qid, result=result)
+        return result
 
     # Questions are independent — run them concurrently; events reach log_fn
     # on this thread.

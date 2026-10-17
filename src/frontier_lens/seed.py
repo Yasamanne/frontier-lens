@@ -23,25 +23,44 @@ def assign_splits(specs) -> list[tuple]:
 def seed(*, force: bool = False) -> int:
     require_live_if_configured()
     engine = get_engine()
-    with engine.begin() as conn:
+    with engine.connect() as conn:
         n = conn.execute(text("SELECT COUNT(*) FROM questions WHERE source='seed'")).scalar_one()
-        if n and not force:
-            print(f"seed already present ({n} rows). pass --force to rebuild.")
-            return n
-        if force:
-            conn.execute(text("DELETE FROM questions WHERE source='seed'"))
+    if n and not force:
+        print(f"seed already present ({n} rows). pass --force to rebuild.")
+        return n
     print_knob_report()
 
-    labeled = assign_splits(all_specs())
-    inserted = 0
+    # Run every key in the sandbox before touching the table, so the write
+    # transaction stays short (other writers, e.g. job heartbeats, are not
+    # blocked) and a failing spec leaves the existing bank untouched.
+    rows = []
+    for spec, split in assign_splits(all_specs()):
+        result = execute(spec.lang, spec.code, spec.input_files, twice=True)
+        if not result.ok:
+            raise RuntimeError(
+                f"seed failed {spec.topic} L{spec.level} {spec.template}: {result.reason} {result.stderr}"
+            )
+        rows.append(
+            {
+                "id": item_id(spec.template, spec.params, spec.code, spec.input_files),
+                "topic": spec.topic,
+                "level": spec.level,
+                "band": spec.band,
+                "split": split,
+                "template": spec.template,
+                "params": json.dumps(spec.params, sort_keys=True),
+                "stem": spec.stem,
+                "code": spec.code,
+                "lang": spec.lang,
+                "files": json.dumps(spec.input_files, sort_keys=True),
+                "key": result.stdout,
+                "numeric": int(spec.numeric),
+            }
+        )
     with engine.begin() as conn:
-        for spec, split in labeled:
-            result = execute(spec.lang, spec.code, spec.input_files, twice=True)
-            if not result.ok:
-                raise RuntimeError(
-                    f"seed failed {spec.topic} L{spec.level} {spec.template}: {result.reason} {result.stderr}"
-                )
-            qid = item_id(spec.template, spec.params, spec.code, spec.input_files)
+        if force:
+            conn.execute(text("DELETE FROM questions WHERE source='seed'"))
+        for row in rows:
             conn.execute(
                 text(
                     """
@@ -54,23 +73,9 @@ def seed(*, force: bool = False) -> int:
                     )
                     """
                 ),
-                {
-                    "id": qid,
-                    "topic": spec.topic,
-                    "level": spec.level,
-                    "band": spec.band,
-                    "split": split,
-                    "template": spec.template,
-                    "params": json.dumps(spec.params, sort_keys=True),
-                    "stem": spec.stem,
-                    "code": spec.code,
-                    "lang": spec.lang,
-                    "files": json.dumps(spec.input_files, sort_keys=True),
-                    "key": result.stdout,
-                    "numeric": int(spec.numeric),
-                },
+                row,
             )
-            inserted += 1
+    inserted = len(rows)
     print(f"seeded {inserted} items")
     return inserted
 

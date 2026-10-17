@@ -1,10 +1,15 @@
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-for _name in list(sys.modules):
-    if _name == "frontier_lens" or _name.startswith("frontier_lens."):
-        del sys.modules[_name]
+# Dev only: drop cached frontier_lens modules so edits under src/ load on the
+# next rerun. Sessions run in threads that share sys.modules, so purging while
+# another session imports raises KeyError; keep it off outside local dev.
+if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
+    for _name in list(sys.modules):
+        if _name == "frontier_lens" or _name.startswith("frontier_lens."):
+            del sys.modules[_name]
 
 # ── Shared theme CSS + top nav (injected) ────────────────────────────────
 import streamlit as _st_nav
@@ -42,10 +47,8 @@ from frontier_lens.review import (
 st.title("Generate")
 engine = get_engine()
 
-import uuid as _uuid
-
+from frontier_lens import job_panel, jobs
 from frontier_lens.failure_analysis import rl_suitable_questions, zero_pass_questions
-from frontier_lens.runlog import write_op_event
 
 # ── Run / model selectors ─────────────────────────────────────────────────
 with engine.connect() as conn:
@@ -95,6 +98,77 @@ for s in sus:
     with st.expander(f"{s['question_id']} k={s['sample_index']} {s['reason']} {s['status']}"):
         st.code((s["raw_output"] or "")[:2000])
 
+# ── Background jobs (rescue / augmentation) ───────────────────────────────
+# Both run in a detached process (frontier_lens.jobs) and save each finished
+# item to the database, so refreshing or leaving this page does not stop them.
+_active_jobs = {r["kind"]: r for r in jobs.active(("rescue", "augment"))}
+_AUG_MODES = {"🎯 One-shot": "one_shot", "🤖 ReAct agent": "react", "🔄 Generate + Review": "review"}
+
+
+def _job_section(kind: str, unit: str, render_results) -> None:
+    job_panel.job_section(
+        kind, role, unit, render_results,
+        running=_active_jobs.get(kind), blocked=False,
+        label=f"Recent {'rescue' if kind == 'rescue' else 'augmentation'} jobs",
+    )
+
+
+def _render_rescue_results(row: dict) -> None:
+    res = jobs.results(row)
+    results, skipped = res["items"], res["skipped"]
+    if not results and not skipped:
+        st.caption("No questions finished yet.")
+        return
+    rescued = sum(1 for r in results if r["rl_suitable"])
+    msg = f"**{rescued}/{len(results)}** rescued.  Log → `logs/op_{row['id']}.txt`"
+    (st.success if row["status"] == "complete" else st.info)(msg)
+    st.dataframe(
+        [{"question_id": r["question_id"][:14], "rescued": r["rl_suitable"],
+          "rescue_level": r.get("rescue_level") or "—",
+          "pass_rate": round(r["pass_rate"], 3),
+          "candidate_id": r.get("candidate_id") or "—",
+          "hint_L1": (r["hint_rounds"][0]["hint"] if len(r.get("hint_rounds", [])) > 0 else "")[:60],
+          "hint_L2": (r["hint_rounds"][1]["hint"] if len(r.get("hint_rounds", [])) > 1 else "")[:60],
+          "hint_L3": (r["hint_rounds"][2]["hint"] if len(r.get("hint_rounds", [])) > 2 else "")[:60]}
+         for r in results],
+        width="stretch",
+    )
+    if skipped:
+        st.caption(f"Skipped {len(skipped)} question(s): " + "; ".join(
+            f"`{s['question_id'][:12]}` ({s.get('reason')})" for s in skipped
+        ))
+    unrescued = len(results) - rescued
+    if unrescued > 0:
+        from frontier_lens.generate import generate_rescue_sft_csv
+
+        st.warning(
+            f"**{unrescued}** question(s) unrescuable after "
+            f"{jobs.config(row)['max_hints']} levels → SFT CSV below."
+        )
+        st.download_button(
+            f"⬇ SFT CSV ({unrescued} unrescued)", data=generate_rescue_sft_csv(results),
+            file_name=f"sft_unrescued_{row['id']}.csv", mime="text/csv",
+            key=f"sft-dl-{row['id']}",
+        )
+
+
+def _render_augment_results(row: dict) -> None:
+    results = jobs.results(row)["items"]
+    if not results:
+        st.caption("No candidates finished yet.")
+        return
+    rl_ok = sum(1 for r in results if r["status"] == "pending")
+    msg = f"**{rl_ok}/{len(results)}** RL-suitable.  Log → `logs/op_{row['id']}.txt`"
+    (st.success if row["status"] == "complete" else st.info)(msg)
+    st.dataframe(
+        [{"source_id": r["source_id"][:14], "candidate_id": r["candidate_id"],
+          "status": r["status"],
+          "pass_rate": round(r["pass_rate"], 3) if r["pass_rate"] is not None else None}
+         for r in results],
+        width="stretch",
+    )
+
+
 # ── Dead-zone rescue (pass@k = 0) ─────────────────────────────────────────
 st.divider()
 st.subheader("🔴 Dead-zone rescue  (pass@k = 0)")
@@ -139,95 +213,24 @@ else:
             f"(1 gen + {int(rescue_k)} samples)) ≈ **{round(_est*_AVG/60,1)} min**"
         )
 
-        if st.button("💡 Progressive hint rescue", key="rescue_btn"):
-            from frontier_lens.generate import generate_rescue_sft_csv, rescue_with_hints
-
+        if st.button(
+            "💡 Progressive hint rescue", key="rescue_btn", disabled="rescue" in _active_jobs,
+            help="Runs in the background; one rescue job at a time.",
+        ):
             ids_to_rescue = [q["id"] for q in dead_qs[: int(rescue_limit)]]
-            op_id = f"rescue_{_uuid.uuid4().hex[:8]}"
-            k_val, h_val = int(rescue_k), int(rescue_max_hints)
-            n_q = len(ids_to_rescue)
-            _total_ops = n_q * h_val * (1 + k_val)
-            _done_ops = [0]
-
-            st.caption(f"Op log: `logs/op_{op_id}.txt`")
-            prog = st.progress(0.0, text=f"0 / {_total_ops} steps")
-            log_lines: list[str] = []
-            log_box = st.empty()
-
-            def _fmt_rescue(event, **f):
-                if event == "rescue_start":
-                    return f"[START] {f.get('n_questions')}q | k={f.get('calibration_k')} | max_hints={f.get('max_hints')}"
-                if event == "rescue_question":
-                    return f"\n[Q {f.get('index')}/{f.get('total')}] {str(f.get('question_id',''))[:12]}  {f.get('topic')}/{f.get('band')}  key={str(f.get('gold_key',''))[:20]}"
-                if event == "hint_attempt_start":
-                    return f"\n  ── Hint round {f.get('level','?')}/{f.get('max_hints','?')} ──"
-                if event == "hint_generated":
-                    if f.get("parse_ok"):
-                        return f"  💡 L{f.get('level','?')} (✓): {str(f.get('hint',''))[:100]}"
-                    return f"  ⚠ L{f.get('level','?')} parse FAILED: {f.get('parse_error','')} | raw: {str(f.get('raw_response_preview',''))[:150]}"
-                if event == "calibration_sample":
-                    mark = "✓" if f.get("is_correct") else "✗"
-                    return f"    sample {f.get('sample_index',0)+1}: {mark}"
-                if event == "hint_attempt_result":
-                    rl = f.get("rl_suitable")
-                    badge = "✅ rescued!" if rl else f"❌ still failing ({f.get('n_correct')}/{f.get('n')})"
-                    return f"  L{f.get('level','?')}: {badge}  pass_rate={f.get('pass_rate',0):.2f}"
-                if event == "hint_result":
-                    if f.get("rl_suitable"):
-                        return f"  ✅ RESCUED L{f.get('rescue_level')} | cand={f.get('candidate_id')} pass_rate={f.get('pass_rate',0):.2f}"
-                    return f"  ❌ UNRESCUABLE after {f.get('n_hints_tried')} hint(s) → SFT export"
-                if event == "rescue_end":
-                    return f"\n[DONE] rescued={f.get('n_rescued')}/{f.get('n_total')}  rejected={f.get('n_rejected')}"
-                return f"[{event}]"
-
-            def rescue_log_fn(event, **fields):
-                write_op_event(op_id, event, **fields)
-                if event in ("hint_generated", "calibration_sample"):
-                    _done_ops[0] += 1
-                    pct = min(_done_ops[0] / max(_total_ops, 1), 1.0)
-                    lvl = fields.get("level", "?")
-                    lbl = (f"L{lvl} hint…" if event == "hint_generated"
-                           else f"L{lvl} sample {fields.get('sample_index',0)+1}/{k_val}")
-                    prog.progress(pct, text=f"Step {_done_ops[0]}/{_total_ops} — {lbl}")
-                # Questions run concurrently, so tag each line with its source.
-                _line = _fmt_rescue(event, **fields)
-                _tag = fields.get("question_id") or fields.get("source_id")
-                if _tag:
-                    _nl = "\n" if _line.startswith("\n") else ""
-                    _line = f"{_nl}[{str(_tag)[:8]}] {_line.lstrip(chr(10))}"
-                log_lines.append(_line)
-                log_box.code("\n".join(log_lines[-30:]), language=None)
-
-            rescue_results = rescue_with_hints(
-                _run_id, _model_id, ids_to_rescue,
-                log_fn=rescue_log_fn, calibration_k=k_val, max_hints=h_val,
+            st.session_state["rescue_job_pick"] = jobs.start(
+                "rescue",
+                {
+                    "run_id": _run_id, "model_id": _model_id, "question_ids": ids_to_rescue,
+                    "calibration_k": int(rescue_k), "max_hints": int(rescue_max_hints),
+                },
+                planned=len(ids_to_rescue),
             )
-            prog.progress(1.0, text="✅ Complete")
-            rescued = sum(1 for r in rescue_results if r["rl_suitable"])
-            unrescued = len(rescue_results) - rescued
-            st.success(f"**{rescued}/{len(rescue_results)}** rescued.  Log → `logs/op_{op_id}.txt`")
-            st.dataframe(
-                [{"question_id": r["question_id"][:14], "rescued": r["rl_suitable"],
-                  "rescue_level": r.get("rescue_level") or "—",
-                  "pass_rate": round(r["pass_rate"], 3),
-                  "candidate_id": r.get("candidate_id") or "—",
-                  "hint_L1": (r["hint_rounds"][0]["hint"] if len(r.get("hint_rounds",[])) > 0 else "")[:60],
-                  "hint_L2": (r["hint_rounds"][1]["hint"] if len(r.get("hint_rounds",[])) > 1 else "")[:60],
-                  "hint_L3": (r["hint_rounds"][2]["hint"] if len(r.get("hint_rounds",[])) > 2 else "")[:60]}
-                 for r in rescue_results],
-                width="stretch",
-            )
-            if unrescued > 0:
-                from frontier_lens.generate import generate_rescue_sft_csv
-                sft_csv = generate_rescue_sft_csv(rescue_results)
-                st.warning(f"**{unrescued}** question(s) unrescuable after {h_val} levels → SFT CSV below.")
-                st.download_button(
-                    f"⬇ SFT CSV ({unrescued} unrescued)", data=sft_csv,
-                    file_name=f"sft_unrescued_{op_id}.csv", mime="text/csv",
-                    key=f"sft-dl-{op_id}",
-                )
+            st.rerun()
     else:
         st.info("Switch Role to **Organizer** to run the rescue.")
+
+_job_section("rescue", "questions", _render_rescue_results)
 
 # ── RL-suitable augmentation ──────────────────────────────────────────────
 st.divider()
@@ -300,115 +303,29 @@ else:
             f"~{_est} API calls ({_total_cands} candidate(s)) ≈ **{round(_est*_AVG/60,1)} min**"
         )
 
-        if st.button("🔁 Generate similar questions", key="augment_btn"):
-            use_review = (aug_mode == "🔄 Generate + Review")
-            use_agent  = (aug_mode == "🤖 ReAct agent")
-            if use_review:
-                from frontier_lens.generate import generate_similar_with_review
-            elif use_agent:
-                from frontier_lens.generate import generate_similar_react
-            else:
-                from frontier_lens.generate import generate_similar_questions
-
+        if st.button(
+            "🔁 Generate similar questions", key="augment_btn", disabled="augment" in _active_jobs,
+            help="Runs in the background; one augmentation job at a time.",
+        ):
             seeds = rl_qs[: int(aug_limit)]
-            op_id = f"augment_{_uuid.uuid4().hex[:8]}"
-            k_val = int(aug_k)
-            _total_ops = _total_cands * (1 + k_val)
-            _done_ops = [0]
-
-            st.caption(f"Op log: `logs/op_{op_id}.txt`")
-            prog = st.progress(0.0, text=f"0 / {_total_ops} steps")
-            log_lines2: list[str] = []
-            log_box2 = st.empty()
-
-            def _fmt_aug(event, **f):
-                if event == "similar_start":
-                    return (f"[START] seeds={f.get('n_seeds')} n_each={f.get('n_each')} "
-                            f"total={f.get('total_candidates')} k={f.get('calibration_k')} "
-                            f"mode={f.get('mode','')} max_fix={f.get('max_fix_iterations','')}")
-                if event == "similar_generate":
-                    return f"\n[{f.get('index')}/{f.get('total')}] source={str(f.get('source_id',''))[:12]}  {f.get('topic')}/{f.get('band')}"
-                if event == "sandbox_result" or event == "review_sandbox":
-                    return f"  🔧 sandbox: {'OK ✓' if f.get('ok') else 'FAIL ✗ (' + str(f.get('reason','')) + ')'}"
-                if event == "calibration_sample":
-                    return f"  sample {f.get('sample_index',0)+1}: {'✓' if f.get('is_correct') else '✗'}"
-                if event == "similar_result":
-                    rate = f.get("pass_rate"); rate_str = f"{rate:.2f}" if rate is not None else "n/a"
-                    icon = "✅" if f.get("status") == "pending" else "❌"
-                    rev = f" [review={f.get('review_score')}]" if f.get("review_score") else ""
-                    return f"  {icon} cand={f.get('candidate_id','?')} status={f.get('status')} pass_rate={rate_str}{rev}"
-                if event == "similar_end":
-                    return f"\n[DONE] pending={f.get('n_pending')}/{f.get('n_total')}"
-                # ── Generate+Review events ────────────────────────────────
-                if event == "review_generate":
-                    return f"  📝 generating (iter {f.get('fix_iter',0)})…"
-                if event == "review_start":
-                    return f"  🔍 reviewing (iter {f.get('fix_iter',0)})…"
-                if event == "review_result":
-                    score = f.get("score", 0)
-                    passed = f.get("passed", False)
-                    badge = "✅ PASSED" if passed else "❌ FAILED"
-                    issues = "; ".join(f.get("issues", []))
-                    cs = f.get("criterion_scores", {})
-                    scores_str = " | ".join(f"{k.replace('_',' ')[:8]}={v}" for k,v in cs.items())
-                    return (f"  {badge} score={score}/100  {scores_str}\n"
-                            + (f"    issues: {issues}" if issues else ""))
-                if event == "review_fix":
-                    return (f"\n  🔧 Fix iter {f.get('fix_iter')}: score was {f.get('score')} — "
-                            f"issues: {'; '.join(str(i) for i in f.get('issues', []))[:120]}")
-                # ── ReAct agent events ────────────────────────────────────
-                if event == "agent_tool_call":
-                    return f"  ↳ step {f.get('step')} tool={f.get('tool')}"
-                if event == "agent_end":
-                    cid = f.get("candidate_id")
-                    return f"  🏁 done  steps={f.get('steps_used')}  {'cand='+cid if cid else 'no submit'}"
-                return f"[{event}]"
-
-            def augment_log_fn(event, **fields):
-                write_op_event(op_id, event, **fields)
-                if event in ("sandbox_result", "calibration_sample",
-                             "handle_calibration_sample", "agent_tool_call"):
-                    _done_ops[0] += 1
-                    pct = min(_done_ops[0] / max(_total_ops, 1), 1.0)
-                    prog.progress(pct, text=f"Step {_done_ops[0]}/{_total_ops}")
-                # Questions run concurrently, so tag each line with its source.
-                _line = _fmt_aug(event, **fields)
-                _tag = fields.get("question_id") or fields.get("source_id")
-                if _tag:
-                    _nl = "\n" if _line.startswith("\n") else ""
-                    _line = f"{_nl}[{str(_tag)[:8]}] {_line.lstrip(chr(10))}"
-                log_lines2.append(_line)
-                log_box2.code("\n".join(log_lines2[-30:]), language=None)
-
-            if use_review:
-                aug_results = generate_similar_with_review(
-                    seeds, run_id=_run_id, n_each=int(aug_each),
-                    max_fix_iterations=int(aug_fix_iters or 3),
-                    log_fn=augment_log_fn, calibration_k=k_val,
-                )
-            elif use_agent:
-                aug_results = generate_similar_react(
-                    seeds, run_id=_run_id, n_each=int(aug_each), max_loops=int(aug_loops or 3),
-                    log_fn=augment_log_fn, calibration_k=k_val,
-                )
-            else:
-                aug_results = generate_similar_questions(
-                    seeds, run_id=_run_id, n_each=int(aug_each),
-                    log_fn=augment_log_fn, calibration_k=k_val,
-                )
-
-            prog.progress(1.0, text="✅ Complete")
-            rl_ok = sum(1 for r in aug_results if r["status"] == "pending")
-            st.success(f"**{rl_ok}/{len(aug_results)}** RL-suitable.  Log → `logs/op_{op_id}.txt`")
-            st.dataframe(
-                [{"source_id": r["source_id"][:14], "candidate_id": r["candidate_id"],
-                  "status": r["status"],
-                  "pass_rate": round(r["pass_rate"], 3) if r["pass_rate"] is not None else None}
-                 for r in aug_results],
-                width="stretch",
+            st.session_state["augment_job_pick"] = jobs.start(
+                "augment",
+                {
+                    "run_id": _run_id,
+                    "mode": _AUG_MODES[aug_mode],
+                    "seeds": [dict(q) for q in seeds],
+                    "n_each": int(aug_each),
+                    "calibration_k": int(aug_k),
+                    "max_loops": int(aug_loops or 3),
+                    "max_fix_iterations": int(aug_fix_iters or 3),
+                },
+                planned=len(seeds) * int(aug_each),
             )
+            st.rerun()
     else:
         st.info("Switch Role to **Organizer** to generate similar questions.")
+
+_job_section("augment", "candidates", _render_augment_results)
 
 # ── SME Queue ─────────────────────────────────────────────────────────────
 st.divider()

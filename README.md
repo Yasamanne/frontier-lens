@@ -45,7 +45,11 @@ cp .env.example .env   # then paste OPENROUTER_API_KEY
 uv run python -m frontier_lens.contest --live --models gemma4-26b-a4b --write-fixtures
 # logs/RUN_ID.txt and logs/RUN_ID.jsonl: prompt, model output, sandbox key, grade per sample
 # Rebuild a log from SQLite: uv run python -m frontier_lens.runlog --run RUN_ID
+# Resume an interrupted or failed run (re-samples only what is missing):
+# uv run python -m frontier_lens.eval_job RUN_ID
 ```
+
+Evaluation runs, calibration and seeding (Seed page), and dead-zone rescue and augmentation (Generate page) execute in a background process. Refreshing or leaving the page does not stop them; progress and results are read back from SQLite, and an interrupted job can be resumed from its page or with `uv run python -m frontier_lens.jobs JOB_ID`.
 
 Policy uses k=8; references use k=3 unless you pass `--k`. `--write-fixtures` saves answers to `fixtures/recorded_run.json`. Replay does not call a model:
 
