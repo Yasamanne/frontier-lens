@@ -8,7 +8,6 @@ from sqlalchemy import text
 
 from frontier_lens.config import POLICY_K, REFERENCE_K
 from frontier_lens.db import get_engine
-from frontier_lens.ids import item_set_hash
 from frontier_lens.parallel import map_unordered
 from frontier_lens.parse import parse_final
 from frontier_lens.prompt import contest_prompt
@@ -18,6 +17,14 @@ from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import ModelSpec, sync_models
 from frontier_lens.reward import grade
 from frontier_lens.runlog import write_event
+from frontier_lens.runstate import (
+    claim,
+    finish,
+    heartbeat,
+    insert_run,
+    load_run,
+    set_fields,
+)
 
 
 def select_questions(
@@ -106,41 +113,56 @@ def run_contest(
     notes: str | None = None,
     reuse_prev_runs: bool = False,
     judge_model_id: str | None = None,
+    run_id: str | None = None,
+    finalize: bool = True,
 ) -> str:
+    """Score models on questions and store attempts under one run.
+
+    Pass an existing *run_id* to resume it: samples already stored for that
+    run are skipped. With ``finalize=False`` the run stays ``running`` on
+    success so the caller can add later phases before calling
+    :func:`mark_complete`.
+    """
     levels = levels or [1, 2, 3]
     specs = {m.id: m for m in sync_models()}
     qrows = select_questions(levels, limit, question_ids)
     engine = get_engine()
-    with engine.begin() as conn:
-        if not qrows:
-            raise RuntimeError("no questions; run python -m frontier_lens.seed")
-        ids = [
-            m
-            for m in (model_ids or list(specs))
-            if specs.get(m) and specs[m].role in {"policy", "reference"}
-        ]
-        if not ids:
-            raise RuntimeError("no evaluated models selected")
-        if replay:
-            gap = replay_gap(ids, levels, k=k, limit=limit, question_ids=question_ids)
-            if gap:
-                raise RuntimeError(gap)
-        run_id = uuid.uuid4().hex[:12]
-        conn.execute(
-            text(
-                """
-                INSERT INTO eval_runs (id, created_at, item_set_hash, status, k, notes)
-                VALUES (:id, :ts, :h, 'running', :k, :notes)
-                """
+    if not qrows:
+        raise RuntimeError("no questions; run python -m frontier_lens.seed")
+    ids = [
+        m
+        for m in (model_ids or list(specs))
+        if specs.get(m) and specs[m].role in {"policy", "reference"}
+    ]
+    if not ids:
+        raise RuntimeError("no evaluated models selected")
+    if replay:
+        gap = replay_gap(ids, levels, k=k, limit=limit, question_ids=question_ids)
+        if gap:
+            raise RuntimeError(gap)
+    existing = load_run(run_id) if run_id else None
+    # planned_primary is set once sampling starts, so a queued run is not a resume.
+    resumed = existing is not None and existing.get("planned_primary") is not None
+    if existing is None:
+        run_id = run_id or uuid.uuid4().hex[:12]
+        insert_run(
+            run_id,
+            [q["id"] for q in qrows],
+            max(POLICY_K, REFERENCE_K) if k is None else k,
+            notes or ("replay" if replay else "live"),
+            run_config(
+                ids, k, [q["id"] for q in qrows],
+                notes=notes or ("replay" if replay else "live"),
+                levels=levels,
+                replay=replay,
+                reuse_prev_runs=reuse_prev_runs,
+                judge_model_id=judge_model_id,
             ),
-            {
-                "id": run_id,
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "h": item_set_hash([q["id"] for q in qrows]),
-                "k": max(POLICY_K, REFERENCE_K) if k is None else k,
-                "notes": notes or ("replay" if replay else "live"),
-            },
+            status="queued",
         )
+    if not claim(run_id):
+        raise RuntimeError(f"run {run_id} was stopped before it started")
+    set_fields(run_id, phase="primary")
 
     fixture = FixtureProvider() if replay else None
 
@@ -170,202 +192,258 @@ def run_contest(
         levels=levels,
         limit=limit,
         n_items=len(qrows),
+        resumed=resumed,
     )
     _log_status(run_id, "running", models=",".join(ids), items=len(qrows))
-    try:
-        providers = {
-            mid: None if replay else OpenAICompatibleProvider(specs[mid].base_url or "", specs[mid].api_key_env)
-            for mid in ids
-        }
-        jobs: list[tuple[str, dict, int]] = []
-        with engine.connect() as conn:
-            for mid in ids:
-                for q in qrows:
-                    for sample in range(1, samples_for(specs[mid], k) + 1):
-                        if reuse_prev_runs:
-                            # Skip this sample if ANY completed run has it for this model
-                            exists = conn.execute(
-                                text(
-                                    """
-                                    SELECT 1 FROM attempts a
-                                    JOIN eval_runs r2 ON r2.id = a.run_id
-                                    WHERE a.model_id = :m
-                                      AND a.question_id = :q
-                                      AND a.sample_index = :s
-                                      AND (a.run_id = :r OR r2.status = 'complete')
-                                    LIMIT 1
-                                    """
-                                ),
-                                {"r": run_id, "m": mid, "q": q["id"], "s": sample},
-                            ).first()
-                        else:
-                            exists = conn.execute(
-                                text(
-                                    "SELECT 1 FROM attempts WHERE run_id=:r AND model_id=:m AND question_id=:q AND sample_index=:s"
-                                ),
-                                {"r": run_id, "m": mid, "q": q["id"], "s": sample},
-                            ).first()
-                        if not exists:
-                            jobs.append((mid, q, sample))
+    with heartbeat(run_id):
+        try:
+            providers = {
+                mid: None if replay else OpenAICompatibleProvider(specs[mid].base_url or "", specs[mid].api_key_env)
+                for mid in ids
+            }
+            jobs: list[tuple[str, dict, int]] = []
+            with engine.connect() as conn:
+                for mid in ids:
+                    for q in qrows:
+                        for sample in range(1, samples_for(specs[mid], k) + 1):
+                            if reuse_prev_runs:
+                                # Skip this sample if ANY completed run has it for this model
+                                exists = conn.execute(
+                                    text(
+                                        """
+                                        SELECT 1 FROM attempts a
+                                        JOIN eval_runs r2 ON r2.id = a.run_id
+                                        WHERE a.model_id = :m
+                                          AND a.question_id = :q
+                                          AND a.sample_index = :s
+                                          AND (a.run_id = :r OR r2.status = 'complete')
+                                        LIMIT 1
+                                        """
+                                    ),
+                                    {"r": run_id, "m": mid, "q": q["id"], "s": sample},
+                                ).first()
+                            else:
+                                exists = conn.execute(
+                                    text(
+                                        "SELECT 1 FROM attempts WHERE run_id=:r AND model_id=:m AND question_id=:q AND sample_index=:s"
+                                    ),
+                                    {"r": run_id, "m": mid, "q": q["id"], "s": sample},
+                                ).first()
+                            if not exists:
+                                jobs.append((mid, q, sample))
+                # Stored samples for these models (a resumed run may also hold verifier rows).
+                already = sum(
+                    conn.execute(
+                        text("SELECT COUNT(*) FROM attempts WHERE run_id=:r AND model_id=:m"),
+                        {"r": run_id, "m": mid},
+                    ).scalar() or 0
+                    for mid in ids
+                )
+            set_fields(run_id, planned_primary=already + len(jobs))
 
-        def _run_sample(job: tuple[str, dict, int]):
-            """Worker: call the model and grade. No DB/log writes here."""
-            mid, q, sample = job
-            spec: ModelSpec = specs[mid]
-            prompt = contest_prompt(q["stem"])
-            provider_note = None
-            if replay:
-                completion = fixture.complete_lookup(mid, q["id"], sample)
-            else:
-                try:
-                    completion = providers[mid].complete(
-                        prompt, spec.model,
-                        thinking=bool(spec.thinking),
-                        json_mode=bool(getattr(spec, "json_mode", False)),
-                    )
-                except Exception as exc:
-                    provider_note = f"{type(exc).__name__}: {exc}"
-                    completion = Completion(
-                        text=f"[provider_error] {provider_note}",
-                        latency_ms=0,
-                        tokens_in=None,
-                        tokens_out=None,
-                    )
-            numeric = bool(q["numeric"])
-            # grade() is the canonical scorer — its parsed_ans and
-            # unparsable flag are the source of truth.
-            # parse_final() is only used as a fallback display value
-            # when grade() could not extract an answer.
-            reward, parsed_ans, unparsable = grade(
-                completion.text, q["key"], numeric=numeric,
-                judge_fn=judge_fn,
-            )
-            parsed = parse_final(completion.text, numeric=numeric)
-            # Always prefer grade's parsed answer to avoid divergence
-            if parsed_ans is not None:
-                parsed.answer = parsed_ans
-            parsed.unparsable = unparsable
-            return prompt, completion, provider_note, reward, parsed
-
-        # Results arrive out of order; persistence stays on this thread.
-        provider_misses = dict.fromkeys(ids, 0)
-        for i, (prompt, completion, provider_note, reward, parsed) in map_unordered(
-            _run_sample, jobs, max_workers=1 if replay else None
-        ):
-            mid, q, sample = jobs[i]
-            spec = specs[mid]
-            correct = reward == 1
-            provider_misses[mid] = provider_misses[mid] + 1 if provider_note else 0
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO attempts (
-                            run_id, model_id, question_id, sample_index, raw_output, parsed_answer,
-                            is_correct, unparsable, latency_ms, tokens_in, tokens_out
-                        ) VALUES (
-                            :r, :m, :q, :s, :raw, :ans, :ok, :unp, :lat, :ti, :to
+            def _run_sample(job: tuple[str, dict, int]):
+                """Worker: call the model and grade. No DB/log writes here."""
+                mid, q, sample = job
+                spec: ModelSpec = specs[mid]
+                prompt = contest_prompt(q["stem"])
+                provider_note = None
+                if replay:
+                    completion = fixture.complete_lookup(mid, q["id"], sample)
+                else:
+                    try:
+                        completion = providers[mid].complete(
+                            prompt, spec.model,
+                            thinking=bool(spec.thinking),
+                            json_mode=bool(getattr(spec, "json_mode", False)),
                         )
-                        """
-                    ),
+                    except Exception as exc:
+                        provider_note = f"{type(exc).__name__}: {exc}"
+                        completion = Completion(
+                            text=f"[provider_error] {provider_note}",
+                            latency_ms=0,
+                            tokens_in=None,
+                            tokens_out=None,
+                        )
+                numeric = bool(q["numeric"])
+                # grade() is the canonical scorer — its parsed_ans and
+                # unparsable flag are the source of truth.
+                # parse_final() is only used as a fallback display value
+                # when grade() could not extract an answer.
+                reward, parsed_ans, unparsable = grade(
+                    completion.text, q["key"], numeric=numeric,
+                    judge_fn=judge_fn,
+                )
+                parsed = parse_final(completion.text, numeric=numeric)
+                # Always prefer grade's parsed answer to avoid divergence
+                if parsed_ans is not None:
+                    parsed.answer = parsed_ans
+                parsed.unparsable = unparsable
+                return prompt, completion, provider_note, reward, parsed
+
+            # Results arrive out of order; persistence stays on this thread.
+            provider_misses = dict.fromkeys(ids, 0)
+            for i, (prompt, completion, provider_note, reward, parsed) in map_unordered(
+                _run_sample, jobs, max_workers=1 if replay else None
+            ):
+                mid, q, sample = jobs[i]
+                spec = specs[mid]
+                correct = reward == 1
+                provider_misses[mid] = provider_misses[mid] + 1 if provider_note else 0
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO attempts (
+                                run_id, model_id, question_id, sample_index, raw_output, parsed_answer,
+                                is_correct, unparsable, latency_ms, tokens_in, tokens_out
+                            ) VALUES (
+                                :r, :m, :q, :s, :raw, :ans, :ok, :unp, :lat, :ti, :to
+                            )
+                            ON CONFLICT (run_id, model_id, question_id, sample_index) DO NOTHING
+                            """
+                        ),
+                        {
+                            "r": run_id,
+                            "m": mid,
+                            "q": q["id"],
+                            "s": sample,
+                            "raw": completion.text,
+                            "ans": parsed.answer,
+                            "ok": int(correct),
+                            "unp": int(parsed.unparsable),
+                            "lat": completion.latency_ms,
+                            "ti": completion.tokens_in,
+                            "to": completion.tokens_out,
+                        },
+                    )
+                recorded.append(
                     {
-                        "r": run_id,
-                        "m": mid,
-                        "q": q["id"],
-                        "s": sample,
-                        "raw": completion.text,
-                        "ans": parsed.answer,
-                        "ok": int(correct),
-                        "unp": int(parsed.unparsable),
-                        "lat": completion.latency_ms,
-                        "ti": completion.tokens_in,
-                        "to": completion.tokens_out,
-                    },
+                        "model_id": mid,
+                        "question_id": q["id"],
+                        "sample_index": sample,
+                        "raw_output": completion.text,
+                        "parsed_answer": parsed.answer,
+                        "is_correct": correct,
+                        "latency_ms": completion.latency_ms,
+                    }
                 )
-            recorded.append(
-                {
-                    "model_id": mid,
-                    "question_id": q["id"],
-                    "sample_index": sample,
-                    "raw_output": completion.text,
-                    "parsed_answer": parsed.answer,
-                    "is_correct": correct,
-                    "latency_ms": completion.latency_ms,
+                write_event(
+                    run_id,
+                    "contest_sample",
+                    model_id=mid,
+                    provider_model=spec.model,
+                    question_id=q["id"],
+                    sample_index=sample,
+                    source=q["source"],
+                    template=q["template"],
+                    level=q["level"],
+                    split=q["split"],
+                    topic=q["topic"],
+                    band=q["band"],
+                    params=json.loads(q["params_json"] or "{}"),
+                    gold_key=q["key"],
+                    prompt=prompt,
+                    raw_output=completion.text,
+                    parsed_answer=parsed.answer,
+                    reward=reward,
+                    is_correct=correct,
+                    unparsable=parsed.unparsable,
+                    latency_ms=completion.latency_ms,
+                    tokens_in=completion.tokens_in,
+                    tokens_out=completion.tokens_out,
+                )
+                print(
+                    f"{mid} {q['id']} k={sample} correct={correct} unparsable={parsed.unparsable}"
+                    + (f" provider_error={provider_note}" if provider_note else ""),
+                    flush=True,
+                )
+                if provider_note and provider_misses[mid] >= 3:
+                    raise RuntimeError(
+                        f"provider failed {provider_misses[mid]} samples in a row; stopping. "
+                        f"Last error: {provider_note}"
+                    )
+            if finalize:
+                mark_complete(run_id)
+            if write_fixtures and not replay:
+                from frontier_lens.config import FIXTURES_PATH
+
+                FIXTURES_PATH.parent.mkdir(exist_ok=True)
+                header = {
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "run_id": run_id,
+                    "k": k,
+                    "models": [
+                        {
+                            "id": specs[m].id,
+                            "provider": specs[m].provider,
+                            "model_id": specs[m].model,
+                            "quant": specs[m].quant,
+                            "thinking": specs[m].thinking,
+                        }
+                        for m in ids
+                    ],
+                    # Samples finish out of order; sort for a stable fixture file.
+                    "rows": sorted(
+                        recorded,
+                        key=lambda r: (r["model_id"], r["question_id"], r["sample_index"]),
+                    ),
                 }
-            )
-            write_event(
-                run_id,
-                "contest_sample",
-                model_id=mid,
-                provider_model=spec.model,
-                question_id=q["id"],
-                sample_index=sample,
-                source=q["source"],
-                template=q["template"],
-                level=q["level"],
-                split=q["split"],
-                topic=q["topic"],
-                band=q["band"],
-                params=json.loads(q["params_json"] or "{}"),
-                gold_key=q["key"],
-                prompt=prompt,
-                raw_output=completion.text,
-                parsed_answer=parsed.answer,
-                reward=reward,
-                is_correct=correct,
-                unparsable=parsed.unparsable,
-                latency_ms=completion.latency_ms,
-                tokens_in=completion.tokens_in,
-                tokens_out=completion.tokens_out,
-            )
-            print(
-                f"{mid} {q['id']} k={sample} correct={correct} unparsable={parsed.unparsable}"
-                + (f" provider_error={provider_note}" if provider_note else ""),
-                flush=True,
-            )
-            if provider_note and provider_misses[mid] >= 3:
-                raise RuntimeError(
-                    f"provider failed {provider_misses[mid]} samples in a row; stopping. "
-                    f"Last error: {provider_note}"
-                )
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE eval_runs SET status='complete' WHERE id=:id"), {"id": run_id})
+                FIXTURES_PATH.write_text(json.dumps(header, indent=2))
+                print(f"wrote {FIXTURES_PATH}", flush=True)
+        except Exception as exc:
+            mark_failed(run_id, exc)
+            raise
+        except KeyboardInterrupt:
+            mark_interrupted(run_id, "interrupted (Ctrl+C)")
+            raise
+    return run_id
+
+
+def run_config(
+    model_ids: list[str],
+    k: int | None,
+    question_ids: list[str],
+    *,
+    notes: str | None = None,
+    levels: list[int] | None = None,
+    replay: bool = False,
+    reuse_prev_runs: bool = False,
+    judge_model_id: str | None = None,
+    verifier_model: str | None = None,
+) -> dict:
+    """Everything needed to resume a run (see frontier_lens.eval_job)."""
+    return {
+        "models": list(model_ids),
+        "k": k,
+        "question_ids": list(question_ids),
+        "notes": notes,
+        "levels": levels or [1, 2, 3],
+        "replay": replay,
+        "reuse_prev_runs": reuse_prev_runs,
+        "judge_model_id": judge_model_id,
+        "verifier_model": verifier_model,
+    }
+
+
+# Each mark_* only changes a run that is still queued/running (see runstate.finish).
+
+def mark_complete(run_id: str) -> None:
+    if finish(run_id, "complete", phase="done", error=None):
         write_event(run_id, "run_end", status="complete")
         _log_status(run_id, "complete")
-        if write_fixtures and not replay:
-            from frontier_lens.config import FIXTURES_PATH
 
-            FIXTURES_PATH.parent.mkdir(exist_ok=True)
-            header = {
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
-                "run_id": run_id,
-                "k": k,
-                "models": [
-                    {
-                        "id": specs[m].id,
-                        "provider": specs[m].provider,
-                        "model_id": specs[m].model,
-                        "quant": specs[m].quant,
-                        "thinking": specs[m].thinking,
-                    }
-                    for m in ids
-                ],
-                # Samples finish out of order; sort for a stable fixture file.
-                "rows": sorted(
-                    recorded,
-                    key=lambda r: (r["model_id"], r["question_id"], r["sample_index"]),
-                ),
-            }
-            FIXTURES_PATH.write_text(json.dumps(header, indent=2))
-            print(f"wrote {FIXTURES_PATH}", flush=True)
-    except Exception as exc:
-        err = f"{type(exc).__name__}: {exc}"
-        with engine.begin() as conn:
-            conn.execute(text("UPDATE eval_runs SET status='failed' WHERE id=:id"), {"id": run_id})
+
+def mark_failed(run_id: str, exc: BaseException) -> None:
+    err = f"{type(exc).__name__}: {exc}"
+    if finish(run_id, "failed", error=err[:2000]):
         write_event(run_id, "run_end", status="failed", error=err)
         _log_status(run_id, "failed", error=err)
-        raise
-    return run_id
+
+
+def mark_interrupted(run_id: str, reason: str) -> None:
+    if finish(run_id, "interrupted", error=reason):
+        write_event(run_id, "run_end", status="interrupted", error=reason)
+        _log_status(run_id, "interrupted", error=reason)
 
 
 def run_verifier(
