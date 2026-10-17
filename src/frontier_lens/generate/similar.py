@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from frontier_lens.config import POLICY_K
 from frontier_lens.db import get_engine
+from frontier_lens.parallel import call_slot, map_with_events
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import sync_models
 from frontier_lens.sandbox import execute
@@ -125,12 +126,13 @@ def _run_similar_agent(
 
     for step in range(max_loops):
         try:
-            resp = client.chat.completions.create(
-                model=gen.model,
-                messages=messages,
-                tools=toolset,
-                timeout=120,
-            )
+            with call_slot():
+                resp = client.chat.completions.create(
+                    model=gen.model,
+                    messages=messages,
+                    tools=toolset,
+                    timeout=120,
+                )
         except Exception as exc:
             _log("agent_error", step=step + 1, error=str(exc))
             break
@@ -250,7 +252,6 @@ def generate_similar_questions(
         raise RuntimeError("No generator model configured in models.yaml.")
     provider = OpenAICompatibleProvider(gen.base_url or "", gen.api_key_env)
     engine = get_engine()
-    results: list[dict] = []
 
     total = len(source_questions) * n_each
     _log(
@@ -261,73 +262,76 @@ def generate_similar_questions(
         calibration_k=calibration_k or POLICY_K,
     )
 
-    idx = 0
-    for q in source_questions:
-        for attempt in range(n_each):
-            idx += 1
-            _log(
-                "similar_generate",
-                index=idx,
-                total=total,
-                source_id=q["id"],
-                topic=q["topic"],
-                band=q["band"],
-                attempt=attempt,
-                stem_preview=(q["stem"] or "")[:120],
-            )
-            _rej = _get_rejected_variants(q["id"])
-            prompt = SIMILAR_QUESTION_PROMPT.format(
-                topic=_label_or_infer(q.get("topic"), "topic"),
-                band=_label_or_infer(q.get("band"), "band"),
-                stem=q["stem"],
-                seed_key=q.get("key", ""),
-                prior_variants="(one-shot mode — no prior variants tracked)",
-                rejected_variants="\n".join(f"Rejected {i+1}: {s[:200]}" for i, s in enumerate(_rej)) or "(none)",
-            )
-            completion = provider.complete(prompt, gen.model, skip_correction=True)
+    def _one(item: tuple[int, dict, int], _log) -> dict:
+        """Worker: one candidate for one seed."""
+        seed_i, q, attempt = item
+        idx = seed_i * n_each + attempt + 1
+        _log(
+            "similar_generate",
+            index=idx,
+            total=total,
+            source_id=q["id"],
+            topic=q["topic"],
+            band=q["band"],
+            attempt=attempt,
+            stem_preview=(q["stem"] or "")[:120],
+        )
+        _rej = _get_rejected_variants(q["id"])
+        prompt = SIMILAR_QUESTION_PROMPT.format(
+            topic=_label_or_infer(q.get("topic"), "topic"),
+            band=_label_or_infer(q.get("band"), "band"),
+            stem=q["stem"],
+            seed_key=q.get("key", ""),
+            prior_variants="(one-shot mode — no prior variants tracked)",
+            rejected_variants="\n".join(f"Rejected {i+1}: {s[:200]}" for i, s in enumerate(_rej)) or "(none)",
+        )
+        completion = provider.complete(prompt, gen.model, skip_correction=True)
 
-            def _cal_log(event: str, _sid=q["id"], _att=attempt, **fields):
-                _log(event, source_id=_sid, attempt=_att, **fields)
+        def _cal_log(event: str, _sid=q["id"], _att=attempt, **fields):
+            _log(event, source_id=_sid, attempt=_att, **fields)
 
-            cid = _store_candidate(
-                completion.text,
-                q["topic"],
-                q["band"],
-                gen.id,
-                "similar_augment",
-                [q["id"]],
-                run_id=run_id,
-                rl_split="train",
-                calibrate=True,
-                complete_fn=complete_fn,
-                log_fn=_cal_log,
-                calibration_k=calibration_k,
-            )
-            with engine.connect() as conn:
-                row = conn.execute(
-                    text("SELECT status, policy_pass_rate, auto_reject_reason FROM candidates WHERE id=:id"),
-                    {"id": cid},
-                ).mappings().first()
-            status = row["status"] if row else "unknown"
-            rate = row["policy_pass_rate"] if row else None
-            reject_reason = row["auto_reject_reason"] if row else None
+        cid = _store_candidate(
+            completion.text,
+            q["topic"],
+            q["band"],
+            gen.id,
+            "similar_augment",
+            [q["id"]],
+            run_id=run_id,
+            rl_split="train",
+            calibrate=True,
+            complete_fn=complete_fn,
+            log_fn=_cal_log,
+            calibration_k=calibration_k,
+        )
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT status, policy_pass_rate, auto_reject_reason FROM candidates WHERE id=:id"),
+                {"id": cid},
+            ).mappings().first()
+        status = row["status"] if row else "unknown"
+        rate = row["policy_pass_rate"] if row else None
+        reject_reason = row["auto_reject_reason"] if row else None
 
-            _log(
-                "similar_result",
-                source_id=q["id"],
-                candidate_id=cid,
-                status=status,
-                pass_rate=rate,
-                auto_reject_reason=reject_reason,
-            )
-            results.append(
-                {
-                    "source_id": q["id"],
-                    "candidate_id": cid,
-                    "status": status,
-                    "pass_rate": rate,
-                }
-            )
+        _log(
+            "similar_result",
+            source_id=q["id"],
+            candidate_id=cid,
+            status=status,
+            pass_rate=rate,
+            auto_reject_reason=reject_reason,
+        )
+        return {
+            "source_id": q["id"],
+            "candidate_id": cid,
+            "status": status,
+            "pass_rate": rate,
+        }
+
+    # Seeds/attempts are independent — run concurrently; events reach log_fn
+    # on this thread.
+    items = [(i, q, a) for i, q in enumerate(source_questions) for a in range(n_each)]
+    results = map_with_events(_one, items, log_fn)
 
     n_pending = sum(1 for r in results if r["status"] == "pending")
     _log(
@@ -385,66 +389,67 @@ def generate_similar_react(
         max_loops=max_loops,
     )
 
-    results: list[dict] = []
-    idx = 0
+    def _one(item: tuple[int, dict, int], _log) -> dict:
+        """Worker: one candidate for one seed."""
+        seed_i, q, attempt = item
+        idx = seed_i * n_each + attempt + 1
+        _log(
+            "similar_generate",
+            index=idx,
+            total=total,
+            source_id=q["id"],
+            topic=q["topic"],
+            band=q["band"],
+            attempt=attempt,
+            stem_preview=(q.get("stem") or "")[:120],
+        )
 
-    for q in source_questions:
-        for attempt in range(n_each):
-            idx += 1
-            _log(
-                "similar_generate",
-                index=idx,
-                total=total,
-                source_id=q["id"],
-                topic=q["topic"],
-                band=q["band"],
-                attempt=attempt,
-                stem_preview=(q.get("stem") or "")[:120],
-            )
+        candidate_id = _run_similar_agent(
+            q, gen, client,
+            run_id=run_id,
+            max_loops=max_loops,
+            log_fn=_log,
+            calibration_k=calibration_k,
+            index=idx,
+            total=total,
+        )
 
-            candidate_id = _run_similar_agent(
-                q, gen, client,
-                run_id=run_id,
-                max_loops=max_loops,
-                log_fn=log_fn,
-                calibration_k=calibration_k,
-                index=idx,
-                total=total,
-            )
+        if candidate_id:
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT status, policy_pass_rate, auto_reject_reason "
+                        "FROM candidates WHERE id=:id"
+                    ),
+                    {"id": candidate_id},
+                ).mappings().first()
+            status = row["status"] if row else "unknown"
+            rate = row["policy_pass_rate"] if row else None
+            reject_reason = row["auto_reject_reason"] if row else None
+        else:
+            status = "not_submitted"
+            rate = None
+            reject_reason = "agent_did_not_submit"
 
-            if candidate_id:
-                with engine.connect() as conn:
-                    row = conn.execute(
-                        text(
-                            "SELECT status, policy_pass_rate, auto_reject_reason "
-                            "FROM candidates WHERE id=:id"
-                        ),
-                        {"id": candidate_id},
-                    ).mappings().first()
-                status = row["status"] if row else "unknown"
-                rate = row["policy_pass_rate"] if row else None
-                reject_reason = row["auto_reject_reason"] if row else None
-            else:
-                status = "not_submitted"
-                rate = None
-                reject_reason = "agent_did_not_submit"
+        _log(
+            "similar_result",
+            source_id=q["id"],
+            candidate_id=candidate_id or "",
+            status=status,
+            pass_rate=rate,
+            auto_reject_reason=reject_reason,
+        )
+        return {
+            "source_id": q["id"],
+            "candidate_id": candidate_id or "",
+            "status": status,
+            "pass_rate": rate,
+        }
 
-            _log(
-                "similar_result",
-                source_id=q["id"],
-                candidate_id=candidate_id or "",
-                status=status,
-                pass_rate=rate,
-                auto_reject_reason=reject_reason,
-            )
-            results.append(
-                {
-                    "source_id": q["id"],
-                    "candidate_id": candidate_id or "",
-                    "status": status,
-                    "pass_rate": rate,
-                }
-            )
+    # Seeds/attempts are independent — run concurrently; events reach log_fn
+    # on this thread.
+    items = [(i, q, a) for i, q in enumerate(source_questions) for a in range(n_each)]
+    results = map_with_events(_one, items, log_fn)
 
     n_pending = sum(1 for r in results if r["status"] == "pending")
     _log(
@@ -509,17 +514,17 @@ def generate_similar_with_review(
          total_candidates=total, calibration_k=k,
          mode="generate_review", max_fix_iterations=max_fix_iterations)
 
-    results: list[dict] = []
-    idx = 0
-
-    for q in source_questions:
+    def _one_seed(item: tuple[int, dict], _log) -> list[dict]:
+        """Worker: all n_each variants for one seed (sequential — each sees the prior ones)."""
+        seed_i, q = item
+        seed_results: list[dict] = []
         prior_stems: list[str] = []  # track variants generated for this seed
 
         # Fetch SME-rejected variants for this source question (rejection memory)
         rejected_stems = _get_rejected_variants(q["id"])
 
         for attempt in range(n_each):
-            idx += 1
+            idx = seed_i * n_each + attempt + 1
             _log("similar_generate", index=idx, total=total,
                  source_id=q["id"], topic=q["topic"], band=q["band"],
                  attempt=attempt, stem_preview=(q.get("stem") or "")[:120])
@@ -660,12 +665,19 @@ def generate_similar_with_review(
                  review_score=review_result.get("score"),
                  fix_iterations_used=(max_fix_iterations + 1 if not passed
                                       else review_result.get("_fix_iter", 0)))
-            results.append({
+            seed_results.append({
                 "source_id": q["id"],
                 "candidate_id": cid or "",
                 "status": status,
                 "pass_rate": rate,
             })
+        return seed_results
+
+    # Seeds are independent — run concurrently; events reach log_fn on this thread.
+    results = [
+        r for seed_results in map_with_events(_one_seed, enumerate(source_questions), log_fn)
+        for r in seed_results
+    ]
 
     n_pending = sum(1 for r in results if r["status"] == "pending")
     _log("similar_end", n_total=total, n_pending=n_pending,

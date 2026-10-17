@@ -9,6 +9,7 @@ from sqlalchemy import text
 from frontier_lens.config import POLICY_K, REFERENCE_K
 from frontier_lens.db import get_engine
 from frontier_lens.ids import item_set_hash
+from frontier_lens.parallel import map_unordered
 from frontier_lens.parse import parse_final
 from frontier_lens.prompt import contest_prompt
 from frontier_lens.providers.base import Completion
@@ -172,14 +173,15 @@ def run_contest(
     )
     _log_status(run_id, "running", models=",".join(ids), items=len(qrows))
     try:
-        for mid in ids:
-            spec: ModelSpec = specs[mid]
-            provider = None if replay else OpenAICompatibleProvider(spec.base_url or "", spec.api_key_env)
-            n_samples = samples_for(spec, k)
-            provider_misses = 0
-            for q in qrows:
-                for sample in range(1, n_samples + 1):
-                    with engine.begin() as conn:
+        providers = {
+            mid: None if replay else OpenAICompatibleProvider(specs[mid].base_url or "", specs[mid].api_key_env)
+            for mid in ids
+        }
+        jobs: list[tuple[str, dict, int]] = []
+        with engine.connect() as conn:
+            for mid in ids:
+                for q in qrows:
+                    for sample in range(1, samples_for(specs[mid], k) + 1):
                         if reuse_prev_runs:
                             # Skip this sample if ANY completed run has it for this model
                             exists = conn.execute(
@@ -203,116 +205,129 @@ def run_contest(
                                 ),
                                 {"r": run_id, "m": mid, "q": q["id"], "s": sample},
                             ).first()
-                    if exists:
-                        continue
-                    prompt = contest_prompt(q["stem"])
-                    provider_note = None
-                    if replay:
-                        completion = fixture.complete_lookup(mid, q["id"], sample)
-                    else:
-                        try:
-                            completion = provider.complete(
-                                prompt, spec.model,
-                                thinking=bool(spec.thinking),
-                                json_mode=bool(getattr(spec, "json_mode", False)),
-                            )
-                            provider_misses = 0
-                        except Exception as exc:
-                            provider_misses += 1
-                            provider_note = f"{type(exc).__name__}: {exc}"
-                            completion = Completion(
-                                text=f"[provider_error] {provider_note}",
-                                latency_ms=0,
-                                tokens_in=None,
-                                tokens_out=None,
-                            )
-                    numeric = bool(q["numeric"])
-                    # grade() is the canonical scorer — its parsed_ans and
-                    # unparsable flag are the source of truth.
-                    # parse_final() is only used as a fallback display value
-                    # when grade() could not extract an answer.
-                    reward, parsed_ans, unparsable = grade(
-                        completion.text, q["key"], numeric=numeric,
-                        judge_fn=judge_fn,
+                        if not exists:
+                            jobs.append((mid, q, sample))
+
+        def _run_sample(job: tuple[str, dict, int]):
+            """Worker: call the model and grade. No DB/log writes here."""
+            mid, q, sample = job
+            spec: ModelSpec = specs[mid]
+            prompt = contest_prompt(q["stem"])
+            provider_note = None
+            if replay:
+                completion = fixture.complete_lookup(mid, q["id"], sample)
+            else:
+                try:
+                    completion = providers[mid].complete(
+                        prompt, spec.model,
+                        thinking=bool(spec.thinking),
+                        json_mode=bool(getattr(spec, "json_mode", False)),
                     )
-                    correct = reward == 1
-                    parsed = parse_final(completion.text, numeric=numeric)
-                    # Always prefer grade's parsed answer to avoid divergence
-                    if parsed_ans is not None:
-                        parsed.answer = parsed_ans
-                    parsed.unparsable = unparsable
-                    with engine.begin() as conn:
-                        conn.execute(
-                            text(
-                                """
-                                INSERT INTO attempts (
-                                    run_id, model_id, question_id, sample_index, raw_output, parsed_answer,
-                                    is_correct, unparsable, latency_ms, tokens_in, tokens_out
-                                ) VALUES (
-                                    :r, :m, :q, :s, :raw, :ans, :ok, :unp, :lat, :ti, :to
-                                )
-                                """
-                            ),
-                            {
-                                "r": run_id,
-                                "m": mid,
-                                "q": q["id"],
-                                "s": sample,
-                                "raw": completion.text,
-                                "ans": parsed.answer,
-                                "ok": int(correct),
-                                "unp": int(parsed.unparsable),
-                                "lat": completion.latency_ms,
-                                "ti": completion.tokens_in,
-                                "to": completion.tokens_out,
-                            },
+                except Exception as exc:
+                    provider_note = f"{type(exc).__name__}: {exc}"
+                    completion = Completion(
+                        text=f"[provider_error] {provider_note}",
+                        latency_ms=0,
+                        tokens_in=None,
+                        tokens_out=None,
+                    )
+            numeric = bool(q["numeric"])
+            # grade() is the canonical scorer — its parsed_ans and
+            # unparsable flag are the source of truth.
+            # parse_final() is only used as a fallback display value
+            # when grade() could not extract an answer.
+            reward, parsed_ans, unparsable = grade(
+                completion.text, q["key"], numeric=numeric,
+                judge_fn=judge_fn,
+            )
+            parsed = parse_final(completion.text, numeric=numeric)
+            # Always prefer grade's parsed answer to avoid divergence
+            if parsed_ans is not None:
+                parsed.answer = parsed_ans
+            parsed.unparsable = unparsable
+            return prompt, completion, provider_note, reward, parsed
+
+        # Results arrive out of order; persistence stays on this thread.
+        provider_misses = dict.fromkeys(ids, 0)
+        for i, (prompt, completion, provider_note, reward, parsed) in map_unordered(
+            _run_sample, jobs, max_workers=1 if replay else None
+        ):
+            mid, q, sample = jobs[i]
+            spec = specs[mid]
+            correct = reward == 1
+            provider_misses[mid] = provider_misses[mid] + 1 if provider_note else 0
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO attempts (
+                            run_id, model_id, question_id, sample_index, raw_output, parsed_answer,
+                            is_correct, unparsable, latency_ms, tokens_in, tokens_out
+                        ) VALUES (
+                            :r, :m, :q, :s, :raw, :ans, :ok, :unp, :lat, :ti, :to
                         )
-                    recorded.append(
-                        {
-                            "model_id": mid,
-                            "question_id": q["id"],
-                            "sample_index": sample,
-                            "raw_output": completion.text,
-                            "parsed_answer": parsed.answer,
-                            "is_correct": correct,
-                            "latency_ms": completion.latency_ms,
-                        }
-                    )
-                    write_event(
-                        run_id,
-                        "contest_sample",
-                        model_id=mid,
-                        provider_model=spec.model,
-                        question_id=q["id"],
-                        sample_index=sample,
-                        source=q["source"],
-                        template=q["template"],
-                        level=q["level"],
-                        split=q["split"],
-                        topic=q["topic"],
-                        band=q["band"],
-                        params=json.loads(q["params_json"] or "{}"),
-                        gold_key=q["key"],
-                        prompt=prompt,
-                        raw_output=completion.text,
-                        parsed_answer=parsed.answer,
-                        reward=reward,
-                        is_correct=correct,
-                        unparsable=parsed.unparsable,
-                        latency_ms=completion.latency_ms,
-                        tokens_in=completion.tokens_in,
-                        tokens_out=completion.tokens_out,
-                    )
-                    print(
-                        f"{mid} {q['id']} k={sample} correct={correct} unparsable={parsed.unparsable}"
-                        + (f" provider_error={provider_note}" if provider_note else ""),
-                        flush=True,
-                    )
-                    if provider_note and provider_misses >= 3:
-                        raise RuntimeError(
-                            f"provider failed {provider_misses} samples in a row; stopping. "
-                            f"Last error: {provider_note}"
-                        )
+                        """
+                    ),
+                    {
+                        "r": run_id,
+                        "m": mid,
+                        "q": q["id"],
+                        "s": sample,
+                        "raw": completion.text,
+                        "ans": parsed.answer,
+                        "ok": int(correct),
+                        "unp": int(parsed.unparsable),
+                        "lat": completion.latency_ms,
+                        "ti": completion.tokens_in,
+                        "to": completion.tokens_out,
+                    },
+                )
+            recorded.append(
+                {
+                    "model_id": mid,
+                    "question_id": q["id"],
+                    "sample_index": sample,
+                    "raw_output": completion.text,
+                    "parsed_answer": parsed.answer,
+                    "is_correct": correct,
+                    "latency_ms": completion.latency_ms,
+                }
+            )
+            write_event(
+                run_id,
+                "contest_sample",
+                model_id=mid,
+                provider_model=spec.model,
+                question_id=q["id"],
+                sample_index=sample,
+                source=q["source"],
+                template=q["template"],
+                level=q["level"],
+                split=q["split"],
+                topic=q["topic"],
+                band=q["band"],
+                params=json.loads(q["params_json"] or "{}"),
+                gold_key=q["key"],
+                prompt=prompt,
+                raw_output=completion.text,
+                parsed_answer=parsed.answer,
+                reward=reward,
+                is_correct=correct,
+                unparsable=parsed.unparsable,
+                latency_ms=completion.latency_ms,
+                tokens_in=completion.tokens_in,
+                tokens_out=completion.tokens_out,
+            )
+            print(
+                f"{mid} {q['id']} k={sample} correct={correct} unparsable={parsed.unparsable}"
+                + (f" provider_error={provider_note}" if provider_note else ""),
+                flush=True,
+            )
+            if provider_note and provider_misses[mid] >= 3:
+                raise RuntimeError(
+                    f"provider failed {provider_misses[mid]} samples in a row; stopping. "
+                    f"Last error: {provider_note}"
+                )
         with engine.begin() as conn:
             conn.execute(text("UPDATE eval_runs SET status='complete' WHERE id=:id"), {"id": run_id})
         write_event(run_id, "run_end", status="complete")
@@ -335,7 +350,11 @@ def run_contest(
                     }
                     for m in ids
                 ],
-                "rows": recorded,
+                # Samples finish out of order; sort for a stable fixture file.
+                "rows": sorted(
+                    recorded,
+                    key=lambda r: (r["model_id"], r["question_id"], r["sample_index"]),
+                ),
             }
             FIXTURES_PATH.write_text(json.dumps(header, indent=2))
             print(f"wrote {FIXTURES_PATH}", flush=True)
@@ -386,9 +405,10 @@ def run_verifier(
             qrows.append(dict(q))
 
     provider = OpenAICompatibleProvider(spec.base_url or "", spec.api_key_env)
-    for q in qrows:
-        for sample in range(1, k + 1):
-            with engine.begin() as conn:
+    jobs: list[tuple[dict, int]] = []
+    with engine.connect() as conn:
+        for q in qrows:
+            for sample in range(1, k + 1):
                 exists = conn.execute(
                     text(
                         "SELECT 1 FROM attempts WHERE run_id=:r AND model_id=:m "
@@ -396,49 +416,56 @@ def run_verifier(
                     ),
                     {"r": run_id, "m": verifier_model_id, "q": q["id"], "s": sample},
                 ).first()
-                if exists:
-                    continue
-            try:
-                completion = provider.complete(
-                    contest_prompt(q["stem"]), spec.model, thinking=bool(spec.thinking)
-                )
-            except Exception as exc:
-                completion = Completion(
-                    text=f"[verifier_error] {exc}", latency_ms=0,
-                    tokens_in=None, tokens_out=None,
-                )
-            numeric = bool(q["numeric"])
-            parsed = parse_final(completion.text, numeric=numeric)
-            reward, parsed_ans, unparsable = grade(completion.text, q["key"], numeric=numeric)
-            if parsed_ans is not None:
-                parsed.answer = parsed_ans
-            parsed.unparsable = unparsable
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT OR IGNORE INTO attempts (
-                            run_id, model_id, question_id, sample_index, raw_output,
-                            parsed_answer, is_correct, unparsable, latency_ms,
-                            tokens_in, tokens_out
-                        ) VALUES (
-                            :r, :m, :q, :s, :raw, :ans, :ok, :unp, :lat, :ti, :to
-                        )
-                        """
-                    ),
-                    {
-                        "r": run_id, "m": verifier_model_id, "q": q["id"], "s": sample,
-                        "raw": completion.text, "ans": parsed.answer,
-                        "ok": int(reward), "unp": int(parsed.unparsable),
-                        "lat": completion.latency_ms,
-                        "ti": completion.tokens_in, "to": completion.tokens_out,
-                    },
-                )
-            print(
-                f"verifier {verifier_model_id} {q['id']} k={sample} "
-                f"correct={bool(reward)} unparsable={parsed.unparsable}",
-                flush=True,
+                if not exists:
+                    jobs.append((q, sample))
+
+    def _run_sample(job: tuple[dict, int]):
+        q, _sample = job
+        try:
+            completion = provider.complete(
+                contest_prompt(q["stem"]), spec.model, thinking=bool(spec.thinking)
             )
+        except Exception as exc:
+            completion = Completion(
+                text=f"[verifier_error] {exc}", latency_ms=0,
+                tokens_in=None, tokens_out=None,
+            )
+        numeric = bool(q["numeric"])
+        parsed = parse_final(completion.text, numeric=numeric)
+        reward, parsed_ans, unparsable = grade(completion.text, q["key"], numeric=numeric)
+        if parsed_ans is not None:
+            parsed.answer = parsed_ans
+        parsed.unparsable = unparsable
+        return completion, reward, parsed
+
+    for i, (completion, reward, parsed) in map_unordered(_run_sample, jobs):
+        q, sample = jobs[i]
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT OR IGNORE INTO attempts (
+                        run_id, model_id, question_id, sample_index, raw_output,
+                        parsed_answer, is_correct, unparsable, latency_ms,
+                        tokens_in, tokens_out
+                    ) VALUES (
+                        :r, :m, :q, :s, :raw, :ans, :ok, :unp, :lat, :ti, :to
+                    )
+                    """
+                ),
+                {
+                    "r": run_id, "m": verifier_model_id, "q": q["id"], "s": sample,
+                    "raw": completion.text, "ans": parsed.answer,
+                    "ok": int(reward), "unp": int(parsed.unparsable),
+                    "lat": completion.latency_ms,
+                    "ti": completion.tokens_in, "to": completion.tokens_out,
+                },
+            )
+        print(
+            f"verifier {verifier_model_id} {q['id']} k={sample} "
+            f"correct={bool(reward)} unparsable={parsed.unparsable}",
+            flush=True,
+        )
 
 
 def generate_results_csv(

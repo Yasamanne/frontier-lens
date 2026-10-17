@@ -145,7 +145,7 @@ def get_engine() -> Engine:
         def _wal(dbapi_conn, _):  # type: ignore[no-untyped-def]
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.close()
 
         with _engine.begin() as conn:
