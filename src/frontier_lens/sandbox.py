@@ -14,8 +14,10 @@ from frontier_lens.config import PYTHON_BIN, TIMEOUT_SEC
 ALLOWED_PY_IMPORTS = frozenset({"math", "itertools", "collections", "decimal"})
 BANNED_PY_CALLS = frozenset({"open", "exec", "eval", "__import__", "compile", "input"})
 ALLOWED_SHELL = frozenset(
-    {"cat", "cut", "sort", "uniq", "wc", "head", "tail", "tr", "grep", "printf"}
+    {"cat", "cut", "sort", "uniq", "wc", "head", "tail", "tr", "grep", "printf", "awk"}
 )
+# Banned only outside single quotes, so an awk program can contain them.
+_BANNED_OUTSIDE_QUOTES = ("$(", "`", ";", "&&", "||", ">", "<", "$")
 
 
 @dataclass
@@ -58,10 +60,50 @@ def validate_python(code: str) -> None:
                 raise SandboxError("unsafe", f"call {func.id}")
 
 
+def _outside_single_quotes(command: str) -> str:
+    parts: list[str] = []
+    quoted = False
+    for ch in command:
+        if ch == "'":
+            quoted = not quoted
+        elif not quoted:
+            parts.append(ch)
+    if quoted:
+        raise SandboxError("unsafe", "unclosed quote")
+    return "".join(parts)
+
+
+def _split_pipeline(command: str) -> list[str]:
+    """Split a shell pipeline on ``|`` characters that are OUTSIDE single quotes.
+
+    A naive ``command.split("|")`` would break valid awk programs that use
+    ``|`` inside single-quoted strings, e.g.::
+
+        awk '{gsub(/,/,"|"); print}' data.csv
+
+    This splitter only cuts on ``|`` characters in the unquoted regions.
+    """
+    stages: list[str] = []
+    current: list[str] = []
+    in_sq = False
+    for ch in command:
+        if ch == "'":
+            in_sq = not in_sq
+            current.append(ch)
+        elif ch == "|" and not in_sq:
+            stages.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    stages.append("".join(current))
+    return stages
+
+
 def validate_shell(command: str) -> None:
-    if any(tok in command for tok in ("$(", "`", ";", "&&", "||", ">", "<")):
+    outside = _outside_single_quotes(command)
+    if any(tok in outside for tok in _BANNED_OUTSIDE_QUOTES):
         raise SandboxError("unsafe", "banned shell metacharacter")
-    stages = command.split("|")
+    stages = _split_pipeline(command)
     if not stages:
         raise SandboxError("unsafe", "empty command")
     for raw in stages:
