@@ -21,6 +21,9 @@ class FixtureProvider:
         row = self.rows.get((model_id, question_id, sample_index))
         if not row:
             raise RuntimeError(
-                f"no fixture for {model_id} {question_id} sample {sample_index}"
+                f"Replay has no recorded answer for {model_id} {question_id} "
+                f"sample {sample_index}. Fixtures belong to an older seed bank. "
+                "Choose live to call the model, or record a new file with "
+                "`uv run python -m frontier_lens.contest --live --write-fixtures`."
             )
         return Completion(row.get("raw_output") or "", int(row.get("latency_ms") or 0), None, None)

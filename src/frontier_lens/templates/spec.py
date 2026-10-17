@@ -31,3 +31,8 @@ def shell_stem(files: dict[str, str], command: str, question: str) -> str:
 
 def python_stem(code: str, question: str) -> str:
     return f"Python:\n{code.rstrip()}\n\nQuestion: {question}"
+
+
+def hidden_stem(question: str) -> str:
+    """Problem text only. Verifier code is executed for the key, not shown."""
+    return question.strip()

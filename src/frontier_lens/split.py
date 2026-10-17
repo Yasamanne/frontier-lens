@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-# Whole templates reserved for eval. No policy feedback is used when generating
-# or seeding these. Train uses every other L2/L3 template.
+# Eval holds out a disjoint seed range of each generator family, under its own
+# template name, so a template never sits in both train and eval.
+# Train origins are 0..7. Eval origins are 10000..10003.
 EVAL_TEMPLATES = frozenset(
     {
-        "state_l3",
-        "count_l2",
+        "shell_pipelines_eval",
+        "python_state_eval",
+        "constraint_counting_eval",
+        "multi_step_units_eval",
     }
 )
 

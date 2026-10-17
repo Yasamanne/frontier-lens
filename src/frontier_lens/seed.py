@@ -4,6 +4,7 @@ import json
 
 from sqlalchemy import text
 
+from frontier_lens.calibrate import print_knob_report, require_live_if_configured
 from frontier_lens.db import get_engine
 from frontier_lens.ids import item_id
 from frontier_lens.sandbox import execute
@@ -20,6 +21,7 @@ def assign_splits(specs) -> list[tuple]:
 
 
 def seed(*, force: bool = False) -> int:
+    require_live_if_configured()
     engine = get_engine()
     with engine.begin() as conn:
         n = conn.execute(text("SELECT COUNT(*) FROM questions WHERE source='seed'")).scalar_one()
@@ -28,6 +30,7 @@ def seed(*, force: bool = False) -> int:
             return n
         if force:
             conn.execute(text("DELETE FROM questions WHERE source='seed'"))
+    print_knob_report()
 
     labeled = assign_splits(all_specs())
     inserted = 0
