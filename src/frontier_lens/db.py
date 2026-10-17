@@ -167,7 +167,7 @@ def _migrate(conn) -> None:
             ("audit_sampled", "INTEGER"),
         ],
         "reviews": [("kind", "TEXT")],
-        "questions": [("reward_fn", "TEXT"), ("audit_batch_id", "TEXT")],
+        "questions": [("reward_fn", "TEXT"), ("audit_batch_id", "TEXT"), ("upload_filename", "TEXT"), ("sme_flagged", "INTEGER"), ("sme_source", "TEXT")],
     }
     for table, cols in extras.items():
         existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
