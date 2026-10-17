@@ -39,6 +39,7 @@ from sqlalchemy import text
 
 from frontier_lens.db import get_engine
 from frontier_lens.failure_analysis import rl_suitable_questions, zero_pass_questions
+from frontier_lens.feedback import REASONS
 from frontier_lens.registry import policy_spec
 from frontier_lens.review import promote
 
@@ -363,21 +364,32 @@ with tab_sme:
                         "Label", ["hard_item", "trivial", "broken_item", "rejected"],
                         key=f"ds-lab-{c['id']}",
                     )
-                    sme_note = st.text_input("Note (optional)", key=f"ds-note-{c['id']}")
+                    reasons = st.multiselect(
+                        "What's wrong? (to reject, pick a reason or write a note)",
+                        list(REASONS), format_func=REASONS.get, key=f"ds-reasons-{c['id']}",
+                    )
+                    sme_note = st.text_area(
+                        "Feedback for the generator (optional)",
+                        placeholder="What should it do differently, or what makes this one good?",
+                        height=68, key=f"ds-note-{c['id']}",
+                    )
                     if st.button("✔ Submit review", key=f"ds-go-{c['id']}"):
-                        try:
-                            promote(
-                                c["id"], sme_label,
-                                fair=sme_label == "hard_item", novel=True,
-                                hard=sme_label == "hard_item", note=sme_note,
-                                kind="sme_queue",
-                            )
-                            st.success(
-                                f"Candidate `{c['id']}` "
-                                + ("→ RL-ready ✅" if sme_label == "hard_item" else "rejected ❌")
-                            )
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(str(exc))
+                        if sme_label != "hard_item" and not reasons and not sme_note.strip():
+                            st.error("Pick a reason or write a note so the generator can learn from it.")
+                        else:
+                            try:
+                                promote(
+                                    c["id"], sme_label,
+                                    fair=sme_label == "hard_item", novel=True,
+                                    hard=sme_label == "hard_item", note=sme_note,
+                                    kind="sme_queue", reasons=reasons,
+                                )
+                                st.success(
+                                    f"Candidate `{c['id']}` "
+                                    + ("→ RL-ready ✅" if sme_label == "hard_item" else "rejected ❌")
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(str(exc))
                 else:
                     st.info("Switch Role to **SME** to approve or reject.")

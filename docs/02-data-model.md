@@ -36,6 +36,8 @@ Background jobs other than evaluation runs: `kind` is `rescue`, `augment`, `cali
 
 Candidates: executed key, `policy_pass_rate`, `pass_at_k`, `rl_split`, status (`pending` / `auto_rejected` / `approved` / `rejected`). One-shot train items outside the learnable band are `auto_rejected` with reason `out_of_band`.
 
+Reviews: `label`, `note`, `reasons` (JSON list of codes from `feedback.REASONS`, e.g. `ambiguous`, `too_easy`, `answer_leak`) and `original_stem` (the generated stem when the SME edited it before approving). `feedback.context_for(topic)` turns recent human reviews (`kind` `sme_queue` / `audit`) into a prompt section: same-seed rejections, most common reasons for the topic, recent rejections, SME rewrites and approved examples with comments. It is added to every train-side generator prompt and to the AI reviewer in Generate + Review mode; feedback on rescue hints goes only to the hint prompt. Held-out eval generation does not use it, because reviewers see policy pass rates.
+
 Audit: a random sample (default 50) is labeled; Wilson 95% CI on the defect rate; accept the batch if the upper bound is below 10%.
 
 Suspicious samples: policy traces that are correct but look like lucky guesses (conflicting `FINAL:` lines, hedge then correct).

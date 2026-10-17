@@ -6,12 +6,14 @@ from sqlalchemy import text
 
 from frontier_lens.config import POLICY_K
 from frontier_lens.db import get_engine
+from frontier_lens.feedback import NO_FEEDBACK
+from frontier_lens.feedback import context_for as sme_feedback_for
 from frontier_lens.parallel import call_slot, map_with_events
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import sync_models
 from frontier_lens.sandbox import execute
 
-from .candidates import _get_rejected_variants, _store_candidate
+from .candidates import _store_candidate
 from .prompts import (
     MAX_FIX_ITERATIONS,
     SIMILAR_AGENT_SYSTEM,
@@ -40,16 +42,12 @@ def _review_similar_question(
     prior_stems: list[str],
     provider: OpenAICompatibleProvider,
     model: str,
-    rejected_stems: list[str] | None = None,
+    sme_feedback: str,
 ) -> dict:
     """Call the reviewer LLM. Returns {score, passed, criterion_scores, issues, fix_instructions}."""
     prior_block = (
         "\n".join(f"  Variant {i+1}: {s[:200]}" for i, s in enumerate(prior_stems))
         if prior_stems else "  (none yet)"
-    )
-    rejected_block = (
-        "\n".join(f"  Rejected {i+1}: {s[:200]}" for i, s in enumerate(rejected_stems or []))
-        if rejected_stems else "  (none)"
     )
     prompt = SIMILAR_REVIEW_PROMPT.format(
         seed_stem=seed_stem[:800],
@@ -60,7 +58,7 @@ def _review_similar_question(
         computed_key=computed_key,
         band=band,
         prior_variants=prior_block,
-        rejected_variants=rejected_block,
+        sme_feedback=sme_feedback,
     )
     completion = provider.complete(prompt, model, skip_correction=True)
     try:
@@ -105,17 +103,13 @@ def _run_similar_agent(
             log_fn(event, source_id=source_q["id"], agent_index=index,
                    agent_total=total, **fields)
 
-    rejected = _get_rejected_variants(source_q["id"])
-    rejected_block = (
-        "\n".join(f"Rejected {i+1}: {s[:200]}" for i, s in enumerate(rejected))
-        if rejected else "(none — no prior rejections for this seed)"
-    )
     system_prompt = SIMILAR_AGENT_SYSTEM.format(
         topic=_label_or_infer(source_q.get("topic"), "topic"),
         band=_label_or_infer(source_q.get("band"), "band"),
         stem=(source_q.get("stem") or "")[:1200],
         max_loops=max_loops,
-    ) + f"\n\nSME-REJECTED VARIANTS FOR THIS SEED (avoid these patterns entirely):\n{rejected_block}"
+        sme_feedback=sme_feedback_for(source_q.get("topic"), source_id=source_q["id"]),
+    )
     messages = [{"role": "user", "content": system_prompt}]
     toolset = _similar_agent_tools()
 
@@ -175,7 +169,9 @@ def _run_similar_agent(
             result_str = handle(
                 tool_name, args,
                 gen_id=gen.id,
-                fail_model="",
+                # Stored as source_fail_ids, like the other similar modes: links the
+                # candidate to its seed (SME queue, same-seed feedback).
+                fail_model=source_q["id"],
                 run_id=run_id,
                 rl_split="train",
                 log_fn=_handle_log,
@@ -276,14 +272,13 @@ def generate_similar_questions(
             attempt=attempt,
             stem_preview=(q["stem"] or "")[:120],
         )
-        _rej = _get_rejected_variants(q["id"])
         prompt = SIMILAR_QUESTION_PROMPT.format(
             topic=_label_or_infer(q.get("topic"), "topic"),
             band=_label_or_infer(q.get("band"), "band"),
             stem=q["stem"],
             seed_key=q.get("key", ""),
             prior_variants="(one-shot mode — no prior variants tracked)",
-            rejected_variants="\n".join(f"Rejected {i+1}: {s[:200]}" for i, s in enumerate(_rej)) or "(none)",
+            sme_feedback=sme_feedback_for(q.get("topic"), source_id=q["id"]),
         )
         completion = provider.complete(prompt, gen.model, skip_correction=True)
 
@@ -520,8 +515,8 @@ def generate_similar_with_review(
         seed_results: list[dict] = []
         prior_stems: list[str] = []  # track variants generated for this seed
 
-        # Fetch SME-rejected variants for this source question (rejection memory)
-        rejected_stems = _get_rejected_variants(q["id"])
+        # SME review feedback for this seed and topic (rejections, reasons, notes).
+        sme_feedback = sme_feedback_for(q.get("topic"), source_id=q["id"])
 
         for attempt in range(n_each):
             idx = seed_i * n_each + attempt + 1
@@ -537,9 +532,6 @@ def generate_similar_with_review(
             def _prior_block(stems: list[str], label: str = "Variant") -> str:
                 return "\n".join(f"{label} {i+1}: {s[:200]}" for i, s in enumerate(stems)) or "(none)"
 
-            def _rejected_block(stems: list[str]) -> str:
-                return "\n".join(f"Rejected {i+1}: {s[:200]}" for i, s in enumerate(stems)) or "(none — no prior rejections)"
-
             for fix_iter in range(max_fix_iterations + 1):
                 is_fix = fix_iter > 0
 
@@ -550,11 +542,11 @@ def generate_similar_with_review(
                         stem=q["stem"],
                         seed_key=q.get("key", ""),
                         prior_variants=_prior_block(prior_stems),
-                        rejected_variants=_rejected_block(rejected_stems),
+                        sme_feedback=sme_feedback,
                     )
                     _log("review_generate", index=idx, fix_iter=0,
                          source_id=q["id"],
-                         n_rejected_variants=len(rejected_stems))
+                         has_sme_feedback=sme_feedback != NO_FEEDBACK)
                 else:
                     prompt = SIMILAR_FIX_PROMPT.format(
                         seed_stem=q["stem"][:600],
@@ -564,7 +556,7 @@ def generate_similar_with_review(
                         issues="; ".join(review_result.get("issues", [])),
                         fix_instructions=review_result.get("fix_instructions", ""),
                         prior_variants=_prior_block(prior_stems),
-                        rejected_variants=_rejected_block(rejected_stems),
+                        sme_feedback=sme_feedback,
                     )
                     _log("review_fix", index=idx, fix_iter=fix_iter,
                          source_id=q["id"],
@@ -612,7 +604,7 @@ def generate_similar_with_review(
                     seed_stem=q["stem"], seed_key=q.get("key", ""),
                     band=_label_or_infer(q.get("band"), "band"),
                     prior_stems=prior_stems,
-                    rejected_stems=rejected_stems,
+                    sme_feedback=sme_feedback,
                     provider=judge_provider, model=judge.model,
                 )
 

@@ -49,6 +49,8 @@ engine = get_engine()
 
 from frontier_lens import job_panel, jobs
 from frontier_lens.failure_analysis import rl_suitable_questions, zero_pass_questions
+from frontier_lens.feedback import REASONS
+from frontier_lens.feedback import context_for as sme_feedback_for
 
 # ── Run / model selectors ─────────────────────────────────────────────────
 with engine.connect() as conn:
@@ -349,6 +351,20 @@ with engine.connect() as conn:
         )
     ).mappings().all()
 
+with st.expander("🧠 Feedback the generator sees (built from SME reviews)"):
+    with engine.connect() as conn:
+        _fb_topics = conn.execute(
+            text("SELECT DISTINCT topic FROM candidates WHERE topic IS NOT NULL ORDER BY topic")
+        ).scalars().all()
+    if _fb_topics:
+        _fb_topic = st.selectbox("Topic", _fb_topics, key="fb_preview_topic")
+        _fb_q, _fb_h = st.tabs(["Question generation", "Rescue hints"])
+        _fb_q.code(sme_feedback_for(_fb_topic), language=None)
+        _fb_h.code(sme_feedback_for(_fb_topic, hints=True), language=None)
+        st.caption("Not used for held-out eval generation (reviewers see policy pass rates).")
+    else:
+        st.caption("No generated candidates yet.")
+
 if not sme_cands:
     st.info("Queue is empty. Run rescue or augmentation above to populate it.")
 else:
@@ -393,7 +409,16 @@ else:
                             "and the gold key will be recomputed."
                         )
 
-                sme_note = st.text_input("Note (optional)", key=f"sme-note-{c['id']}")
+                reasons = st.multiselect(
+                    "What's wrong? (to reject, pick a reason or write a note)",
+                    list(REASONS), format_func=REASONS.get, key=f"sme-reasons-{c['id']}",
+                )
+                sme_note = st.text_area(
+                    "Feedback for the generator (optional)",
+                    placeholder="What should it do differently, or what makes this one good?",
+                    height=68, key=f"sme-note-{c['id']}",
+                )
+                st.caption("Reasons, notes and your edits are shown to the generator next time.")
                 btn_approve, btn_reject = st.columns(2)
                 with btn_approve:
                     if st.button("✅ Approve", key=f"sme-approve-{c['id']}", width="stretch"):
@@ -404,6 +429,7 @@ else:
                                 note=sme_note, kind="sme_queue",
                                 edited_stem=edited_stem,
                                 edited_code=edited_code,
+                                reasons=reasons,
                             )
                             st.success(f"Candidate `{c['id']}` approved and promoted ✅")
                             st.rerun()
@@ -411,18 +437,20 @@ else:
                             st.error(str(exc))
                 with btn_reject:
                     if st.button("❌ Reject", key=f"sme-reject-{c['id']}", width="stretch"):
-                        try:
-                            promote(
-                                c["id"], "rejected",
-                                fair=False, novel=True, hard=False,
-                                note=sme_note, kind="sme_queue",
-                                edited_stem=edited_stem,
-                                edited_code=edited_code,
-                            )
-                            st.warning(f"Candidate `{c['id']}` rejected ❌")
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(str(exc))
+                        if not reasons and not sme_note.strip():
+                            st.error("Pick a reason or write a note so the generator can learn from it.")
+                        else:
+                            try:
+                                # Edits are not applied: the generated stem is what was wrong.
+                                promote(
+                                    c["id"], "rejected",
+                                    fair=False, novel=True, hard=False,
+                                    note=sme_note, kind="sme_queue", reasons=reasons,
+                                )
+                                st.warning(f"Candidate `{c['id']}` rejected ❌")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(str(exc))
             else:
                 st.text(c["stem"][:1000] if c["stem"] else "(empty)")
                 st.info("Switch Role to **SME** to approve or reject.")

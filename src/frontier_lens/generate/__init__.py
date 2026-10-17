@@ -13,14 +13,14 @@ Internal sub-modules:
     .utils        — JSON extraction, string helpers
     .prompts      — all prompt templates and constants
     .calibration  — estimate_pass_rate, _calibrate_collect
-    .candidates   — _store_candidate, _store_hinted_candidate, _get_rejected_variants
+    .candidates   — _store_candidate, _store_hinted_candidate
     .oneshot      — propose_one_shot, _eval_cells, _failures
     .rescue       — rescue_with_hints, generate_rescue_sft_csv
     .similar      — generate_similar_questions/react/with_review
 """
 
 from .calibration import _calibrate_collect, estimate_pass_rate
-from .candidates import _get_rejected_variants, _store_candidate, _store_hinted_candidate
+from .candidates import _store_candidate, _store_hinted_candidate
 from .oneshot import _eval_cells, _failure_analysis_text, _failures, propose_one_shot
 from .prompts import (
     _LEVEL_INSTRUCTIONS,
@@ -64,7 +64,6 @@ __all__ = [
     "_extract_stem_from_raw",
     "_failure_analysis_text",
     "_failures",
-    "_get_rejected_variants",
     "_label_or_infer",
     "_review_similar_question",
     "_run_similar_agent",
