@@ -1,12 +1,17 @@
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-for _name in list(sys.modules):
-    if _name == "frontier_lens" or _name.startswith("frontier_lens."):
-        del sys.modules[_name]
+# Dev only: drop cached frontier_lens modules so edits under src/ load on the
+# next rerun. Sessions run in threads that share sys.modules, so purging while
+# another session imports raises KeyError; keep it off outside local dev.
+if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
+    for _name in list(sys.modules):
+        if _name == "frontier_lens" or _name.startswith("frontier_lens."):
+            del sys.modules[_name]
 
 import streamlit as _st_nav
 import streamlit as st
