@@ -260,7 +260,7 @@ else:
         )
         aug_mode = st.radio(
             "Generation mode",
-            ["🎯 One-shot", "🤖 ReAct agent", "🔄 Generate + Review (mk0-style)"],
+            ["🎯 One-shot", "🤖 ReAct agent", "🔄 Generate + Review"],
             index=2,
             horizontal=True, key="aug_mode",
             help=(
@@ -275,7 +275,7 @@ else:
         aug_fix_iters = None
         if aug_mode == "🤖 ReAct agent":
             aug_loops = st.slider("Max agent loops", 1, 6, 3, key="aug_loops")
-        elif aug_mode == "🔄 Generate + Review (mk0-style)":
+        elif aug_mode == "🔄 Generate + Review":
             aug_fix_iters = st.slider(
                 "Max fix iterations", 1, 4, 3, key="aug_fix_iters",
                 help="How many times the generator can revise after reviewer feedback."
@@ -294,7 +294,7 @@ else:
         )
 
         if st.button("🔁 Generate similar questions", key="augment_btn"):
-            use_review = (aug_mode == "🔄 Generate + Review (mk0-style)")
+            use_review = (aug_mode == "🔄 Generate + Review")
             use_agent  = (aug_mode == "🤖 ReAct agent")
             if use_review:
                 from frontier_lens.generate import generate_similar_with_review
@@ -409,7 +409,7 @@ with engine.connect() as conn:
     sme_cands = conn.execute(
         text(
             """
-            SELECT id, topic, band, stem, executed_key, policy_pass_rate, pass_at_k,
+            SELECT id, topic, band, stem, code, lang, executed_key, policy_pass_rate, pass_at_k,
                    generator_mode, source_fail_ids, created_at
             FROM candidates
             WHERE status = 'pending'
@@ -436,14 +436,33 @@ else:
             f"| pass_rate={rate_str} | pass@k={pak_str}",
             expanded=False,
         ):
-            st.text(c["stem"][:1000] if c["stem"] else "(empty)")
-            st.caption(f"Gold key: `{c['executed_key']}`")
+            st.caption(f"Gold key: `{c['executed_key']}` | lang: `{c['lang']}`")
             if c["source_fail_ids"]:
                 import json as _json2
                 src = _json2.loads(c["source_fail_ids"] or "[]")
                 st.caption(f"Source question(s): {src}")
 
             if role == "SME":
+                # Editable stem and code — pre-filled with current values
+                edited_stem = st.text_area(
+                    "Stem (edit if needed)",
+                    value=c["stem"] or "",
+                    height=120,
+                    key=f"sme-stem-{c['id']}",
+                )
+                with st.expander("Edit verifier code (optional)", expanded=False):
+                    edited_code = st.text_area(
+                        "Verifier code",
+                        value=c["code"] or "",
+                        height=200,
+                        key=f"sme-code-{c['id']}",
+                    )
+                    if edited_code != (c["code"] or ""):
+                        st.warning(
+                            "⚠️ Code changed — the sandbox will re-run on your version "
+                            "and the gold key will be recomputed."
+                        )
+
                 sme_label = st.selectbox(
                     "Label", ["hard_item", "trivial", "broken_item", "rejected"],
                     key=f"sme-lab-{c['id']}",
@@ -456,6 +475,8 @@ else:
                             fair=sme_label == "hard_item", novel=True,
                             hard=sme_label == "hard_item", note=sme_note,
                             kind="sme_queue",
+                            edited_stem=edited_stem,
+                            edited_code=edited_code,
                         )
                         st.success(
                             f"Candidate `{c['id']}` "
@@ -465,4 +486,5 @@ else:
                     except Exception as exc:
                         st.error(str(exc))
             else:
+                st.text(c["stem"][:1000] if c["stem"] else "(empty)")
                 st.info("Switch Role to **SME** to approve or reject.")
