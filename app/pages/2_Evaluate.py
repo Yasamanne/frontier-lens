@@ -1,13 +1,16 @@
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-for _name in list(sys.modules):
-    if _name == "frontier_lens" or _name.startswith("frontier_lens."):
-        del sys.modules[_name]
+# Dev only: drop cached frontier_lens modules so edits under src/ load on the
+# next rerun. Sessions run in threads that share sys.modules, so purging while
+# another session imports raises KeyError; keep it off outside local dev.
+if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
+    for _name in list(sys.modules):
+        if _name == "frontier_lens" or _name.startswith("frontier_lens."):
+            del sys.modules[_name]
 
-import os
-import subprocess
 from datetime import datetime
 
 import streamlit as st
@@ -34,8 +37,9 @@ role = st.session_state.get("role", "Viewer")
 
 from sqlalchemy import text
 
-from frontier_lens.config import OPENROUTER_API_KEY, ROOT
-from frontier_lens.contest import generate_results_csv, run_contest, run_verifier
+from frontier_lens import eval_job, runstate
+from frontier_lens.config import OPENROUTER_API_KEY
+from frontier_lens.contest import generate_results_csv, run_config
 from frontier_lens.db import get_engine
 from frontier_lens.registry import judge_spec, load_yaml
 from frontier_lens.runlog import logs_for_download
@@ -281,11 +285,108 @@ def _already_evaluated(
     return all_done, existing_k, per_model_done
 
 
+# ── Background runs ───────────────────────────────────────────────────────
+# Runs execute in a detached process (frontier_lens.eval_job) and report
+# through SQLite, so refreshing or leaving this page does not stop them.
+runstate.reap_stale()
+_active = runstate.active_runs()
+
+
+def _counts_for_phase(p: dict) -> tuple[str, dict, int | None]:
+    if p["phase"] == "verifier":
+        return f"Verifier {p['verifier']}", p["verifier_counts"], p["planned_verifier"]
+    return "Primary", p["primary"], p["planned_primary"]
+
+
+@st.fragment(run_every=2)
+def _run_panel(run_id: str) -> None:
+    if not runstate.is_active(runstate.load_run(run_id) or {}):
+        st.rerun()  # full rerun: the panel goes away and the summary shows
+    p = runstate.progress(run_id)
+    label, c, planned = _counts_for_phase(p)
+    if planned:
+        st.progress(min(c["done"] / planned, 1.0), text=f"{label}: {c['done']}/{planned} samples")
+    else:
+        st.progress(0.0, text="Starting…" if p["phase"] in (None, "primary") else f"{label}…")
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("Correct", c["correct"])
+    col_b.metric("Wrong", c["wrong"])
+    col_c.metric("Unparsable", c["unparsable"])
+    col_d.metric("Samples", f"{c['done']} / {planned or '?'}")
+    st.caption(
+        f"Run `{run_id}` runs in the background — refreshing or leaving this page "
+        f"does not stop it. Log: `logs/{run_id}.stdout.log`"
+    )
+    log = eval_job.tail(run_id)
+    if log:
+        st.code(log, language=None)
+    if role == "Organizer" and st.button("⏹ Stop run", key=f"eval-stop-{run_id}"):
+        eval_job.stop(run_id)
+        st.rerun()
+
+
+# The run this session started or resumed; summarise it once it stops,
+# even if it finished while the user was on another page.
+_watched = st.session_state.get("eval_watch_run")
+_finished = None
+if _watched and _watched not in {r["id"] for r in _active}:
+    _finished = st.session_state.pop("eval_watch_run")
+if _finished:
+    _fp = runstate.progress(_finished)
+    st.session_state["eval_last_result"] = _finished
+    st.session_state["last_run_id"] = _finished
+    if _fp["status"] == "complete":
+        st.session_state["sme_current_run_qids"] = runstate.zero_correct_questions(
+            _finished, _fp["models"] + ([_fp["verifier"]] if _fp["verifier"] else [])
+        )
+        st.session_state["sme_current_run_id"] = _finished
+
+if _active:
+    st.subheader("Run in progress")
+    for _run in _active:
+        _run_panel(_run["id"])
+elif st.session_state.get("eval_last_result"):
+    _lp = runstate.progress(st.session_state["eval_last_result"])
+    _pc = _lp["primary"]
+    if _lp["status"] == "complete":
+        _acc = _pc["correct"] / _pc["done"] if _pc["done"] else 0
+        st.success(
+            f"Run `{_lp['run_id']}` — **{_pc['correct']}/{_pc['done']}** correct ({_acc:.0%}), "
+            f"{_pc['unparsable']} unparsable"
+        )
+        if _lp["verifier"]:
+            _vc = _lp["verifier_counts"]
+            if _vc["done"]:
+                st.success(
+                    f"Verifier `{_lp['verifier']}`: {_vc['correct']}/{_vc['done']} correct "
+                    "on questions the primary model(s) got 0/k."
+                )
+            else:
+                st.success("Primary model answered all questions correctly at least once — no verifier needed.")
+        _n_sme = len(st.session_state.get("sme_current_run_qids") or [])
+        if _n_sme:
+            st.warning(
+                f"**{_n_sme} question(s)** had 0 correct across all models "
+                f"→ flagged for SME review (visible in the SME section below)."
+            )
+        else:
+            st.success("No questions need SME review — every question had at least one correct answer.")
+    elif _lp["status"] == "interrupted":
+        st.warning(
+            f"Run `{_lp['run_id']}` stopped early ({_lp['error'] or 'process ended'}). "
+            f"{_pc['done']} sample(s) are saved; resume it from **Download results** below."
+        )
+    elif _lp["status"] == "failed":
+        st.error(
+            f"Run `{_lp['run_id']}` failed: {_lp['error'] or 'see log'}. "
+            f"{_pc['done']} sample(s) are saved; resume it from **Download results** below."
+        )
+
 # ── Run button ────────────────────────────────────────────────────────────
 if role == "Viewer":
     st.warning("Viewer role — evaluation is read-only. Switch to Organizer to run live evaluation.")
 
-can_run = bool(chosen) and role == "Organizer" and bool(OPENROUTER_API_KEY)
+can_run = bool(chosen) and role == "Organizer" and bool(OPENROUTER_API_KEY) and not _active
 
 # ── Overlap detection state machine ──────────────────────────────────────
 # State: None → detect → waiting_choice → running
@@ -367,7 +468,7 @@ if st.session_state.get("eval_state") == "waiting_choice":
             "New (needs scoring)": new_count,
             f"k (requested)": k_requested,
         })
-    st.dataframe(model_rows, use_container_width=True)
+    st.dataframe(model_rows, width="stretch")
 
     if len(new_qids) == 0:
         st.success(
@@ -418,198 +519,24 @@ if st.session_state.get("eval_state") == "running":
     st.session_state.pop("eval_per_model_done", None)
     st.session_state["eval_state"] = None
 
-    k_eff = int(k) if k is not None else 8
-    n_items = len(qids_to_run)
-
     if not qids_to_run:
         st.success("All selected questions already have complete results. Nothing to run.")
         st.stop()
 
-    # Build CLI command — always live, always explicit question IDs
-    cmd = [
-        sys.executable, "-m", "frontier_lens.contest",
-        "--live",
-        "--models", *chosen,
-        "--levels", "1", "2", "3",
-        "--notes", source_label,
-        "--questions", *qids_to_run,
-    ]
-    if k is not None:
-        cmd += ["--k", str(int(k))]
-    if reuse_prev:
-        cmd += ["--reuse-prev-runs"]
-    if judge_id:
-        cmd += ["--judge-model", judge_id]
-    if train_only and not uploaded_only:
-        pass  # questions already filtered to train split in _resolve_question_ids
-
-    with st.expander("CLI command", expanded=False):
-        st.code(" ".join(cmd), language="bash")
-
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, env=env,
-    )
-
-    expected_samples = n_items * k_eff * len(chosen)
-    prog = st.progress(0.0, text="Starting primary evaluation…")
-    col_a, col_b, col_c, col_d = st.columns(4)
-    m_correct    = col_a.metric("Correct", 0)
-    m_wrong      = col_b.metric("Wrong", 0)
-    m_unparsable = col_c.metric("Unparsable", 0)
-    m_done       = col_d.metric("Samples", f"0 / {expected_samples}")
-    log_box = st.empty()
-
-    chunks: list[str] = []
-    run_id = run_status = None
-    n_correct = n_wrong = n_unparsable = n_done = 0
-
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        chunks.append(line if line.endswith("\n") else line + "\n")
-        if "correct=" in line and "unparsable=" in line:
-            n_done += 1
-            if "correct=True" in line:
-                n_correct += 1
-            elif "correct=False" in line:
-                if "unparsable=True" in line:
-                    n_unparsable += 1
-                else:
-                    n_wrong += 1
-            pct = min(n_done / max(expected_samples, 1), 1.0)
-            prog.progress(pct, text=f"Primary: {n_done}/{expected_samples} samples")
-            m_correct.metric("Correct", n_correct)
-            m_wrong.metric("Wrong", n_wrong)
-            m_unparsable.metric("Unparsable", n_unparsable)
-            m_done.metric("Samples", f"{n_done} / {expected_samples}")
-        if line.startswith("run "):
-            parts = line.split()
-            run_id = parts[1]
-            for part in parts[2:]:
-                if part.startswith("status="):
-                    run_status = part.split("=", 1)[1]
-        # Keep only the last 20 lines so the box stays compact and scrollable
-        log_box.code("".join(chunks[-20:]), language=None)
-
-    exit_code = proc.wait()
-    prog.progress(1.0, text="Primary evaluation done")
-
-    if exit_code != 0 or not run_id:
-        st.error(f"Primary evaluation failed (exit {exit_code}).")
-    else:
-        st.session_state["last_run_id"] = run_id
-        acc = n_correct / n_done if n_done else 0
-        st.success(
-            f"Run `{run_id}` — **{n_correct}/{n_done}** correct ({acc:.0%}), "
-            f"{n_unparsable} unparsable"
+    # Primary contest, verifier, and SME flagging all run in the background job.
+    run_id = eval_job.start(
+        run_config(
+            chosen, k, qids_to_run,
+            notes=source_label,
+            reuse_prev_runs=reuse_prev,
+            judge_model_id=judge_id,
+            verifier_model=verifier_id,
         )
-
-        # ── Verifier step ─────────────────────────────────────────────────
-        if verifier_id:
-            _m_ph = ",".join(f":vm{i}" for i in range(len(chosen)))
-            _m_pr: dict = {"r": run_id}
-            for _i, _m in enumerate(chosen):
-                _m_pr[f"vm{_i}"] = _m
-            with engine.connect() as conn:
-                failed_ids = conn.execute(
-                    text(
-                        f"""
-                        SELECT question_id
-                        FROM attempts
-                        WHERE run_id = :r AND model_id IN ({_m_ph})
-                        GROUP BY question_id
-                        HAVING SUM(is_correct) = 0
-                        """
-                    ),
-                    _m_pr,
-                ).scalars().all()
-
-            failed_ids = list(set(failed_ids))
-            if failed_ids:
-                st.info(
-                    f"Primary model(s) failed {len(failed_ids)} question(s) completely. "
-                    f"Running verifier **{verifier_id}** on those now…"
-                )
-                ver_prog = st.progress(0.0, text="Verifier running…")
-                ver_log = st.empty()
-                ver_lines: list[str] = []
-
-                # Run verifier inline (it's a separate function, logs to stdout captured here)
-                ver_cmd = [
-                    sys.executable, "-c",
-                    f"""
-import sys; sys.path.insert(0,'src')
-from frontier_lens.contest import run_verifier
-run_verifier('{run_id}', '{verifier_id}', {failed_ids!r}, {k_eff})
-print('verifier_done')
-""",
-                ]
-                ver_proc = subprocess.Popen(
-                    ver_cmd, cwd=str(ROOT),
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1, env=env,
-                )
-                ver_done = 0
-                ver_total = len(failed_ids) * k_eff
-                assert ver_proc.stdout is not None
-                for line in ver_proc.stdout:
-                    ver_lines.append(line if line.endswith("\n") else line + "\n")
-                    if "verifier" in line and "correct=" in line:
-                        ver_done += 1
-                        ver_prog.progress(
-                            min(ver_done / max(ver_total, 1), 1.0),
-                            text=f"Verifier: {ver_done}/{ver_total} samples"
-                        )
-                    ver_log.code("".join(ver_lines[-20:]), language=None)
-                ver_proc.wait()
-                ver_prog.progress(1.0, text="Verifier done")
-                st.success(f"Verifier finished on {len(failed_ids)} question(s).")
-            else:
-                st.success("Primary model answered all questions correctly at least once — no verifier needed.")
-
-        # ── SME flag: mark questions where everything failed ──────────────
-        all_model_ids_for_run = chosen + ([verifier_id] if verifier_id else [])
-        _sme_ph = ",".join(f":sm{i}" for i in range(len(all_model_ids_for_run)))
-        _sme_pr: dict = {"r": run_id}
-        for _i, _m in enumerate(all_model_ids_for_run):
-            _sme_pr[f"sm{_i}"] = _m
-        with engine.connect() as conn:
-            needs_sme = conn.execute(
-                text(
-                    f"""
-                    SELECT question_id
-                    FROM attempts
-                    WHERE run_id = :r AND model_id IN ({_sme_ph})
-                    GROUP BY question_id
-                    HAVING SUM(is_correct) = 0
-                    """
-                ),
-                _sme_pr,
-            ).scalars().all()
-
-        needs_sme = list(set(needs_sme))
-        if needs_sme:
-            with engine.begin() as conn:
-                for qid in needs_sme:
-                    conn.execute(
-                        text("UPDATE questions SET sme_flagged=1, sme_source='evaluate' WHERE id=:id"),
-                        {"id": qid},
-                    )
-            st.warning(
-                f"**{len(needs_sme)} question(s)** had 0 correct across all models "
-                f"→ flagged for SME review (visible in the SME section below)."
-            )
-        else:
-            st.success("No questions need SME review — every question had at least one correct answer.")
-
-        # Store current run's SME list for the section below
-        st.session_state["sme_current_run_qids"] = needs_sme
-        st.session_state["sme_current_run_id"] = run_id
-        st.session_state["last_run_id"] = run_id
-        st.session_state["last_verifier_id"] = verifier_id
+    )
+    st.session_state.pop("eval_last_result", None)
+    st.session_state["eval_watch_run"] = run_id
+    st.session_state["last_run_id"] = run_id
+    st.rerun()
 
 # ── CSV download ───────────────────────────────────────────────────────────
 st.divider()
@@ -618,7 +545,7 @@ st.subheader("Download results")
 with engine.connect() as conn:
     all_runs = conn.execute(
         text("""
-            SELECT r.id, r.created_at, r.status, r.k, r.notes,
+            SELECT r.id, r.created_at, r.status, r.k, r.notes, r.config_json, r.error,
                    GROUP_CONCAT(DISTINCT a.model_id) as models,
                    COUNT(DISTINCT a.question_id) as n_items,
                    COUNT(*) as n_samples
@@ -631,7 +558,10 @@ with engine.connect() as conn:
 if not all_runs:
     st.info("No evaluation runs yet.")
 else:
-    STATUS_ICON = {"complete": "🟢", "failed": "🔴", "running": "🟡"}
+    STATUS_ICON = {
+        "complete": "🟢", "failed": "🔴", "running": "🟡",
+        "queued": "⏳", "interrupted": "🟠",
+    }
     last_run = st.session_state.get("last_run_id")
     run_ids = [r["id"] for r in all_runs]
     default_idx = run_ids.index(last_run) if last_run in run_ids else 0
@@ -650,6 +580,28 @@ else:
     )
     selected_run = all_runs[selected_idx]
     sel_id = selected_run["id"]
+    sel_cfg = runstate.run_config(dict(selected_run))
+
+    if selected_run["status"] in runstate.RESUMABLE:
+        if sel_cfg:
+            col_msg, col_resume = st.columns([3, 1])
+            col_msg.warning(
+                f"This run stopped early ({selected_run['error'] or selected_run['status']}). "
+                "Resume samples only what is missing from it."
+            )
+            needs_key = not sel_cfg.get("replay")
+            if col_resume.button(
+                "▶ Resume run", key=f"eval-resume-{sel_id}",
+                disabled=role != "Organizer" or bool(_active) or (needs_key and not OPENROUTER_API_KEY),
+                help="Organizer only; disabled while another run is in progress.",
+            ):
+                eval_job.launch(sel_id)
+                st.session_state.pop("eval_last_result", None)
+                st.session_state["eval_watch_run"] = sel_id
+                st.session_state["last_run_id"] = sel_id
+                st.rerun()
+        else:
+            st.caption("This run predates resumable runs, so it cannot be resumed. Start a new evaluation instead.")
 
     col_info, col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1, 1])
     with col_info:
@@ -676,8 +628,9 @@ else:
             )
         with col_dl3:
             # Wide CSV with per-response columns
+            sel_verifier = sel_cfg.get("verifier_model") if sel_cfg else None
             with engine.connect() as conn:
-                primary_models_for_run = conn.execute(
+                run_model_ids = conn.execute(
                     text("SELECT DISTINCT model_id FROM attempts WHERE run_id=:r"),
                     {"r": sel_id},
                 ).scalars().all()
@@ -685,6 +638,8 @@ else:
                     text("SELECT created_at FROM eval_runs WHERE id=:r"),
                     {"r": sel_id},
                 ).scalar() or ""
+            # The verifier gets its own columns, so keep it out of the primary list.
+            primary_models_for_run = [m for m in run_model_ids if m != sel_verifier]
             # Format timestamp for filename: 20261016_1139
             try:
                 from datetime import datetime as _dt
@@ -693,8 +648,8 @@ else:
                 _ts_fmt = run_ts[:16].replace(":", "").replace("-", "").replace("T", "_").replace(" ", "_")
             csv_data = generate_results_csv(
                 sel_id,
-                list(primary_models_for_run),
-                verifier_model_id=st.session_state.get("last_verifier_id") if sel_id == st.session_state.get("last_run_id") else None,
+                primary_models_for_run,
+                verifier_model_id=sel_verifier,
             )
             st.download_button(
                 "⬇ results.csv", data=csv_data,
@@ -717,10 +672,11 @@ st.caption(
 
 _sme_run_qids  = st.session_state.get("sme_current_run_qids")   # None = no run yet this session
 _sme_run_id    = st.session_state.get("sme_current_run_id")
-_eval_running  = st.session_state.get("eval_state") == "running"
 
-if _eval_running:
-    st.info("⏳ Evaluation in progress — SME queue will update when the run completes.")
+if _active:
+    # Reviewers can keep working on earlier flags while a run is in progress.
+    st.info("⏳ Evaluation in progress — this run's failures are added when it completes.")
+    _sme_filter_ids = None
 elif _sme_run_qids is None:
     # No run has happened this session — show historical queue
     st.caption("Showing all historically flagged questions. Run an evaluation to see current-run results.")
@@ -777,69 +733,68 @@ def _sme_query(filter_ids: list | None):
             ).mappings().all()
     return rows
 
-if not _eval_running:
-    sme_qs = _sme_query(_sme_filter_ids)
+sme_qs = _sme_query(_sme_filter_ids)
 
-    if not sme_qs and _sme_run_qids is None:
-        st.info("No questions flagged for SME review. Run an evaluation to populate this queue.")
-    elif sme_qs:
-        st.caption(f"**{len(sme_qs)}** question(s) awaiting review.")
-        for q in sme_qs:
-            params = _json.loads(q["params_json"] or "{}")
-            sol = params.get("solution_steps", "")
-            phase_label = "📊 Evaluate" if q["sme_source"] == "evaluate" else "🔁 Generate"
-            with st.expander(
-                f"{phase_label} | `{q['id'][:12]}` — {q['topic']}/{q['band']} | key: `{q['key']}`",
-                expanded=True,
-            ):
-                st.text((q["stem"] or "")[:800])
-                if sol:
-                    st.caption(f"**Solution steps:** {sol}")
+if not sme_qs and _sme_run_qids is None:
+    st.info("No questions flagged for SME review. Run an evaluation to populate this queue.")
+elif sme_qs:
+    st.caption(f"**{len(sme_qs)}** question(s) awaiting review.")
+    for q in sme_qs:
+        params = _json.loads(q["params_json"] or "{}")
+        sol = params.get("solution_steps", "")
+        phase_label = "📊 Evaluate" if q["sme_source"] == "evaluate" else "🔁 Generate"
+        with st.expander(
+            f"{phase_label} | `{q['id'][:12]}` — {q['topic']}/{q['band']} | key: `{q['key']}`",
+            expanded=True,
+        ):
+            st.text((q["stem"] or "")[:800])
+            if sol:
+                st.caption(f"**Solution steps:** {sol}")
 
-                if role in {"Organizer", "SME"}:
-                    col_valid, col_broken, col_key = st.columns(3)
+            if role in {"Organizer", "SME"}:
+                col_valid, col_broken, col_key = st.columns(3)
 
-                    if col_valid.button("✅ Mark valid", key=f"sme-valid-{q['id']}"):
-                        with engine.begin() as conn2:
-                            conn2.execute(
-                                text("UPDATE questions SET sme_flagged=0 WHERE id=:id"),
-                                {"id": q["id"]},
-                            )
-                        # Remove from current run's list too
-                        if _sme_run_qids and q["id"] in _sme_run_qids:
-                            st.session_state["sme_current_run_qids"] = [
-                                x for x in _sme_run_qids if x != q["id"]
-                            ]
-                        st.success("Marked as valid — removed from SME queue.")
-                        st.rerun()
+                if col_valid.button("✅ Mark valid", key=f"sme-valid-{q['id']}"):
+                    with engine.begin() as conn2:
+                        conn2.execute(
+                            text("UPDATE questions SET sme_flagged=0 WHERE id=:id"),
+                            {"id": q["id"]},
+                        )
+                    # Remove from current run's list too
+                    if _sme_run_qids and q["id"] in _sme_run_qids:
+                        st.session_state["sme_current_run_qids"] = [
+                            x for x in _sme_run_qids if x != q["id"]
+                        ]
+                    st.success("Marked as valid — removed from SME queue.")
+                    st.rerun()
 
-                    if col_broken.button("🗑 Mark broken (remove)", key=f"sme-broken-{q['id']}"):
-                        with engine.begin() as conn2:
-                            conn2.execute(
-                                text("UPDATE questions SET sme_flagged=2 WHERE id=:id"),
-                                {"id": q["id"]},
-                            )
-                        if _sme_run_qids and q["id"] in _sme_run_qids:
-                            st.session_state["sme_current_run_qids"] = [
-                                x for x in _sme_run_qids if x != q["id"]
-                            ]
-                        st.warning("Marked as broken — will be excluded from future runs.")
-                        st.rerun()
+                if col_broken.button("🗑 Mark broken (remove)", key=f"sme-broken-{q['id']}"):
+                    with engine.begin() as conn2:
+                        conn2.execute(
+                            text("UPDATE questions SET sme_flagged=2 WHERE id=:id"),
+                            {"id": q["id"]},
+                        )
+                    if _sme_run_qids and q["id"] in _sme_run_qids:
+                        st.session_state["sme_current_run_qids"] = [
+                            x for x in _sme_run_qids if x != q["id"]
+                        ]
+                    st.warning("Marked as broken — will be excluded from future runs.")
+                    st.rerun()
 
-                    new_key = col_key.text_input(
-                        "Edit gold key", value=q["key"], key=f"sme-key-{q['id']}"
-                    )
-                    if new_key != q["key"] and col_key.button("💾 Save key", key=f"sme-save-{q['id']}"):
-                        with engine.begin() as conn2:
-                            conn2.execute(
-                                text("UPDATE questions SET key=:k, sme_flagged=0 WHERE id=:id"),
-                                {"k": new_key, "id": q["id"]},
-                            )
-                        if _sme_run_qids and q["id"] in _sme_run_qids:
-                            st.session_state["sme_current_run_qids"] = [
-                                x for x in _sme_run_qids if x != q["id"]
-                            ]
-                        st.success(f"Key updated to `{new_key}`. Removed from SME queue.")
-                        st.rerun()
-                else:
-                    st.info("Switch Role to **Organizer** or **SME** to take action.")
+                new_key = col_key.text_input(
+                    "Edit gold key", value=q["key"], key=f"sme-key-{q['id']}"
+                )
+                if new_key != q["key"] and col_key.button("💾 Save key", key=f"sme-save-{q['id']}"):
+                    with engine.begin() as conn2:
+                        conn2.execute(
+                            text("UPDATE questions SET key=:k, sme_flagged=0 WHERE id=:id"),
+                            {"k": new_key, "id": q["id"]},
+                        )
+                    if _sme_run_qids and q["id"] in _sme_run_qids:
+                        st.session_state["sme_current_run_qids"] = [
+                            x for x in _sme_run_qids if x != q["id"]
+                        ]
+                    st.success(f"Key updated to `{new_key}`. Removed from SME queue.")
+                    st.rerun()
+            else:
+                st.info("Switch Role to **Organizer** or **SME** to take action.")

@@ -1,10 +1,15 @@
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-for _name in list(sys.modules):
-    if _name == "frontier_lens" or _name.startswith("frontier_lens."):
-        del sys.modules[_name]
+# Dev only: drop cached frontier_lens modules so edits under src/ load on the
+# next rerun. Sessions run in threads that share sys.modules, so purging while
+# another session imports raises KeyError; keep it off outside local dev.
+if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
+    for _name in list(sys.modules):
+        if _name == "frontier_lens" or _name.startswith("frontier_lens."):
+            del sys.modules[_name]
 
 import json
 
@@ -133,7 +138,7 @@ with tab_rl:
                     round(int(q["n_correct"]) / max(int(q["n"]) - int(q.get("n_unparsable", 0)), 1), 3)),
                 "stem": (q["stem"] or "")[:100],
             } for q in rl_qs],
-            use_container_width=True,
+            width="stretch",
         )
         # CSV download
         import csv as _csv, io as _io
@@ -176,7 +181,7 @@ with tab_rl:
                 "pass_rate": round(c["policy_pass_rate"] or 0, 3),
                 "stem": (c["stem"] or "")[:100],
             } for c in approved],
-            use_container_width=True,
+            width="stretch",
         )
         out2 = _io.StringIO()
         w2 = _csv.DictWriter(out2, fieldnames=["id","topic","band","stem","key","pass_rate","generator_mode"])
@@ -263,7 +268,7 @@ with tab_sft:
                     "best_hint_tried": hint_map.get(q["id"], "(no hint attempted)")[:100],
                     "stem": (q["stem"] or "")[:100],
                 } for q in unrescued],
-                use_container_width=True,
+                width="stretch",
             )
 
             # Build SFT CSV: original responses from attempts table + best hint stem

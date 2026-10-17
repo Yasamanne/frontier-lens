@@ -6,6 +6,8 @@ Copy `.env.example` to `.env` (gitignored). `OPENROUTER_API_KEY` is required for
 
 No keys are required for seed, tests, or fixture replay.
 
+`FRONTIER_LENS_DEV_RELOAD=1` makes each page re-import `frontier_lens` on every rerun, so edits under `src/` show up without restarting Streamlit. Set it in your shell for local development only (`FRONTIER_LENS_DEV_RELOAD=1 uv run streamlit run app/Home.py`), not in `.env`, Docker or Railway: with two sessions open it can fail imports with `KeyError: 'frontier_lens...'`. Without it, restart Streamlit after changing `src/`.
+
 ## Hosted inference (OpenRouter)
 
 The default roster is OpenRouter open-weight slugs. Streamlit does not load weights; it calls `https://openrouter.ai/api/v1`. Local Ollama remains optional if you add a `localhost` row in `models.yaml`.

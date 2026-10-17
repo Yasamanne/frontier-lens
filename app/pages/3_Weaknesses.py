@@ -1,10 +1,15 @@
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-for _name in list(sys.modules):
-    if _name == "frontier_lens" or _name.startswith("frontier_lens."):
-        del sys.modules[_name]
+# Dev only: drop cached frontier_lens modules so edits under src/ load on the
+# next rerun. Sessions run in threads that share sys.modules, so purging while
+# another session imports raises KeyError; keep it off outside local dev.
+if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
+    for _name in list(sys.modules):
+        if _name == "frontier_lens" or _name.startswith("frontier_lens."):
+            del sys.modules[_name]
 
 import pandas as pd
 import streamlit as st
@@ -137,7 +142,7 @@ else:
         for key, label in MODE_LABELS.items():
             row[label.split("\n")[0]] = f"{agg.get(key, 0):.0%}"
         rows.append(row)
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
 
     for cell in fa_cells:
         label = f"📍 {cell['topic']} / {cell['band']}  —  dominant: {cell['dominant_mode'].replace('_frac','').replace('_',' ')}"

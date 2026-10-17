@@ -168,6 +168,16 @@ def _migrate(conn) -> None:
             ("run_id", "TEXT"),
         ],
         "reviews": [("kind", "TEXT")],
+        # Background-run state; see frontier_lens.runstate.
+        "eval_runs": [
+            ("config_json", "TEXT"),
+            ("pid", "INTEGER"),
+            ("heartbeat_at", "TEXT"),
+            ("phase", "TEXT"),
+            ("planned_primary", "INTEGER"),
+            ("planned_verifier", "INTEGER"),
+            ("error", "TEXT"),
+        ],
         "questions": [("reward_fn", "TEXT"), ("audit_batch_id", "TEXT"), ("upload_filename", "TEXT"), ("sme_flagged", "INTEGER"), ("sme_source", "TEXT")],
     }
     for table, cols in extras.items():
@@ -195,6 +205,40 @@ def _migrate(conn) -> None:
             """
         )
     )
+    # Background jobs other than evaluation runs; see frontier_lens.jobs.
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS op_jobs (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                pid INTEGER,
+                heartbeat_at TEXT,
+                phase TEXT,
+                planned INTEGER,
+                done INTEGER DEFAULT 0,
+                error TEXT
+            )
+            """
+        )
+    )
+    # One row per finished unit of work, appended as it completes.
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS op_job_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                item_json TEXT NOT NULL
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_op_job_items_job ON op_job_items(job_id)"))
     conn.execute(
         text(
             """

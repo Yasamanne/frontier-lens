@@ -26,6 +26,12 @@ Registry from `models.yaml`: id, role (`policy` / `reference` / `generator`), fa
 
 Runs store k (policy default 8, reference default 3). Attempts: sample_index 1..k, raw_output, parsed_answer, is_correct from `exact_match_v1` on the last `FINAL:` line.
 
+Run status: `queued` → `running` → `complete`, or `failed` / `interrupted`. `config_json` holds what is needed to resume (models, k, question ids, judge, verifier). A running job refreshes `heartbeat_at` and `pid` every few seconds; a `queued`/`running` run with no heartbeat for 90 s is marked `interrupted`. `phase` (`primary` / `verifier` / `flagging` / `done`) and `planned_primary` / `planned_verifier` drive the progress bar, and `error` keeps the last failure. Resuming (`python -m frontier_lens.eval_job RUN_ID`) samples only the (model, question, sample) triples the run does not have yet.
+
+## op_jobs
+
+Background jobs other than evaluation runs: `kind` is `rescue`, `augment`, `calibrate` or `seed`. Same status, heartbeat and resume rules as `eval_runs`. `planned` / `done` count units of work (questions, candidates, topics). Each finished unit is appended to `op_job_items` (`job_id`, `skipped`, `item_json`) as it completes, so the Generate and Seed pages show results after a refresh and resuming skips finished work. Calibration writes `data/level_knobs.json` once, after every selected topic is measured. Run or resume from the CLI with `python -m frontier_lens.jobs JOB_ID`; logs are `logs/op_JOB_ID.stdout.log` (formatted) and `logs/op_JOB_ID.{txt,jsonl}` (events).
+
 ## candidates / reviews / audit_batches / suspicious_samples / trajectories
 
 Candidates: executed key, `policy_pass_rate`, `pass_at_k`, `rl_split`, status (`pending` / `auto_rejected` / `approved` / `rejected`). One-shot train items outside the learnable band are `auto_rejected` with reason `out_of_band`.

@@ -12,7 +12,7 @@ dependencies = [
   "pyyaml>=6.0",
   "requests>=2.31",
   "sqlalchemy>=2.0",
-  "streamlit>=1.32",
+  "streamlit>=1.49",  # width="stretch" on st.dataframe
 ]
 
 [dependency-groups]

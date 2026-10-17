@@ -1,14 +1,17 @@
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-for _name in list(sys.modules):
-    if _name == "frontier_lens" or _name.startswith("frontier_lens."):
-        del sys.modules[_name]
+# Dev only: drop cached frontier_lens modules so edits under src/ load on the
+# next rerun. Sessions run in threads that share sys.modules, so purging while
+# another session imports raises KeyError; keep it off outside local dev.
+if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
+    for _name in list(sys.modules):
+        if _name == "frontier_lens" or _name.startswith("frontier_lens."):
+            del sys.modules[_name]
 
 import json
-import os
-import subprocess
 
 import streamlit as st
 
@@ -35,14 +38,38 @@ role = st.session_state.get("role", "Viewer")
 
 from sqlalchemy import text
 
+from frontier_lens import job_panel, jobs
 from frontier_lens.calibrate import GRIDS, KNOBS_PATH, PRIMARY, load_manifest
-from frontier_lens.config import ROOT
 from frontier_lens.db import get_engine
 
 st.title("Seed")
 st.caption("Step 1 of the pipeline — build the question bank the model will be evaluated on.")
 
 engine = get_engine()
+
+# Calibration and seeding run in a detached process (frontier_lens.jobs), so
+# refreshing or leaving this page does not stop them. Seeding reads the knobs
+# calibration writes, so only one of the two runs at a time.
+_seed_jobs = {r["kind"]: r for r in jobs.active(("calibrate", "seed"))}
+
+
+def _render_calibrate_result(row: dict) -> None:
+    done = [r["topic"] for r in jobs.results(row)["items"]]
+    if row["status"] == "complete":
+        st.success(
+            "Calibration complete. Knobs written to `data/level_knobs.json`. Now regenerate seeds."
+        )
+    elif done:
+        st.caption(f"Calibrated so far (already saved to the knobs file): {', '.join(done)}")
+
+
+def _render_seed_result(row: dict) -> None:
+    items = jobs.results(row)["items"]
+    if row["status"] == "complete" and items:
+        st.success(
+            f"✅ Seeded {items[0]['inserted']} questions. Go to **Evaluate** (page 2) to run the model."
+        )
+
 tab_auto, tab_upload = st.tabs(["🌱 Auto-generate", "📂 Upload CSV"])
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -75,7 +102,7 @@ with tab_auto:
             total += n
 
         table_rows = [{"topic": t, **counts} for t, counts in sorted(by_topic.items())]
-        st.dataframe(table_rows, use_container_width=True)
+        st.dataframe(table_rows, width="stretch")
         st.caption(f"**{total} seed questions** across {len(by_topic)} topics.")
     else:
         st.warning("No seed questions in the database. Run **Generate Seeds** below.")
@@ -110,7 +137,7 @@ with tab_auto:
                 "L3": str(block.get("3", "—")),
                 "measured": block.get("measured", False),
             })
-        st.dataframe(rows_cal, use_container_width=True)
+        st.dataframe(rows_cal, width="stretch")
 
     # ── Step 1: Calibrate ─────────────────────────────────────────────────
     st.divider()
@@ -137,35 +164,21 @@ with tab_auto:
     n_cal_calls = len(cal_topics) * 6 * cal_k
     st.caption(f"≈ {n_cal_calls} API calls for the selected configuration.")
 
-    if st.button("Run calibration", disabled=(role != "Organizer" or not cal_topics)):
-        if role != "Organizer":
-            st.error("Set Role to Organizer on Home to run calibration.")
-        else:
-            cmd = [
-                sys.executable, "-m", "frontier_lens.calibrate",
-                "--live", "--k", str(cal_k),
-                "--topics", *cal_topics,
-            ]
-            st.write("Running:", " ".join(cmd))
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            proc = subprocess.Popen(
-                cmd, cwd=str(ROOT),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=env,
-            )
-            log_box = st.empty()
-            chunks: list[str] = []
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                chunks.append(line if line.endswith("\n") else line + "\n")
-                log_box.code("".join(chunks)[-2000:])
-            code = proc.wait()
-            if code == 0:
-                st.success("Calibration complete. Knobs written to `data/level_knobs.json`. Now regenerate seeds.")
-                st.rerun()
-            else:
-                st.error(f"Calibration failed (exit {code}).")
+    if st.button(
+        "Run calibration",
+        disabled=role != "Organizer" or not cal_topics or bool(_seed_jobs),
+        help="Runs in the background; disabled while calibration or seeding is running.",
+    ):
+        st.session_state["calibrate_job_pick"] = jobs.start(
+            "calibrate", {"topics": list(cal_topics), "k": int(cal_k)}, planned=len(cal_topics),
+        )
+        st.rerun()
+
+    job_panel.job_section(
+        "calibrate", role, "topics", _render_calibrate_result,
+        running=_seed_jobs.get("calibrate"), blocked=bool(_seed_jobs),
+        label="Recent calibration jobs",
+    )
 
     if role != "Organizer":
         st.caption("Switch Role to **Organizer** on Home to run calibration.")
@@ -182,44 +195,19 @@ with tab_auto:
 
     force = st.checkbox("Force rebuild (delete existing seeds)", value=bool(rows))
 
-    if st.button("Generate seeds", type="primary", disabled=(role != "Organizer")):
-        if role != "Organizer":
-            st.error("Set Role to Organizer on Home to generate seeds.")
-        else:
-            cmd = [sys.executable, "-m", "frontier_lens.seed"]
-            if force:
-                cmd.append("--force")
-            st.write("Running:", " ".join(cmd))
+    if st.button(
+        "Generate seeds", type="primary",
+        disabled=role != "Organizer" or bool(_seed_jobs),
+        help="Runs in the background; disabled while calibration or seeding is running.",
+    ):
+        st.session_state["seed_job_pick"] = jobs.start("seed", {"force": bool(force)}, planned=1)
+        st.rerun()
 
-            prog = st.progress(0.0, text="Seeding…")
-            log_box = st.empty()
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            proc = subprocess.Popen(
-                cmd, cwd=str(ROOT),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=env,
-            )
-            chunks: list[str] = []
-            n_seeded = 0
-            TARGET = 182
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                chunks.append(line if line.endswith("\n") else line + "\n")
-                if "seeded" in line:
-                    try:
-                        n_seeded = int(line.strip().split()[1])
-                        prog.progress(min(n_seeded / TARGET, 1.0), text=f"Seeded {n_seeded}/{TARGET} items")
-                    except (IndexError, ValueError):
-                        pass
-                log_box.code("".join(chunks)[-2000:])
-            code = proc.wait()
-            prog.progress(1.0, text="Done")
-            if code == 0:
-                st.success(f"✅ Seeded {n_seeded} questions. Go to **Evaluate** (page 2) to run the model.")
-                st.rerun()
-            else:
-                st.error(f"Seeding failed (exit {code}).")
+    job_panel.job_section(
+        "seed", role, "step", _render_seed_result,
+        running=_seed_jobs.get("seed"), blocked=bool(_seed_jobs), needs_key=False,
+        label="Recent seeding jobs",
+    )
 
     if role != "Organizer":
         st.caption("Switch Role to **Organizer** on Home to generate seeds.")
@@ -309,6 +297,9 @@ stem,key,topic,difficulty,solution_steps
         )
 
     # ── File uploader ─────────────────────────────────────────────────────
+    if _msg := st.session_state.pop("upload_import_msg", None):
+        st.success(_msg)
+
     uploaded_file = st.file_uploader(
         "Upload questions (.csv or .jsonl)",
         type=["csv", "jsonl"],
@@ -346,7 +337,7 @@ stem,key,topic,difficulty,solution_steps
                     st.caption(
                         "These questions look identical after normalising case, "
                         "whitespace, and LaTeX. Both are included in the import by default. "
-                        "Use the button below to skip the second occurrence of each pair."
+                        "Choose below whether to skip the second occurrence of each pair."
                     )
                     pair_rows = []
                     for i, p in enumerate(result.fuzzy_pairs, 1):
@@ -358,32 +349,68 @@ stem,key,topic,difficulty,solution_steps
                             "Key B": p.row_b["key"],
                             "Same key?": "✅" if p.same_key else "⚠ different",
                         })
-                    st.dataframe(pair_rows, use_container_width=True)
+                    st.dataframe(pair_rows, width="stretch")
 
-                    # Store the choice in session state so it persists across reruns
-                    dedup_choice = st.session_state.get("fuzzy_dedup_choice", "keep_all")
+                    # Keyed per uploaded file so a choice never carries over to the next file
+                    choice_key = f"fuzzy_dedup_{uploaded_file.file_id}"
+                    choice_labels = {
+                        "keep_all": "Import all rows (keep both variants)",
+                        "skip_b": "Skip second occurrence of each near-duplicate",
+                    }
+                    n_skip = len({p.row_b["id"] for p in result.fuzzy_pairs})
+                    n_after = {"keep_all": len(result.rows), "skip_b": len(result.rows) - n_skip}
+
+                    # on_click runs before the rerun, so the buttons render disabled immediately
+                    def _choose(choice: str) -> None:
+                        st.session_state[choice_key] = choice
+                        st.toast(f"{choice_labels[choice]} — {n_after[choice]} row(s) selected for import", icon="✅")
+
+                    def _reset_choice() -> None:
+                        st.session_state.pop(choice_key, None)
+                        st.toast("Near-duplicate choice cleared", icon="🔄")
+
+                    chosen = st.session_state.get(choice_key)
                     col_keep, col_skip = st.columns(2)
-                    if col_keep.button("Import all rows (keep both variants)", key="fuzzy_keep"):
-                        st.session_state["fuzzy_dedup_choice"] = "keep_all"
-                        dedup_choice = "keep_all"
-                    if col_skip.button("Skip second occurrence of each near-duplicate", key="fuzzy_skip"):
-                        st.session_state["fuzzy_dedup_choice"] = "skip_b"
-                        dedup_choice = "skip_b"
-
-                    if dedup_choice == "skip_b":
-                        st.info(
-                            f"Will skip {len(result.fuzzy_pairs)} near-duplicate(s). "
-                            f"{len(result.rows) - len(result.fuzzy_pairs)} rows will be imported."
+                    for col, choice in ((col_keep, "keep_all"), (col_skip, "skip_b")):
+                        col.button(
+                            choice_labels[choice],
+                            key=f"{choice_key}_{choice}",
+                            on_click=_choose,
+                            args=(choice,),
+                            disabled=chosen is not None,
+                            type="primary" if chosen == choice else "secondary",
+                            width="stretch",
                         )
-                    else:
-                        st.info(f"Will import all {len(result.rows)} rows (both variants of each pair).")
+                    if chosen:
+                        st.success(f"Choice saved: **{choice_labels[chosen]}**")
+                        st.button("🔄 Change choice", key=f"{choice_key}_reset", on_click=_reset_choice)
+                    dedup_choice = chosen or "keep_all"
             else:
                 dedup_choice = "keep_all"
 
+            # Apply fuzzy dedup choice before the summary and preview so both reflect it
+            if dedup_choice == "skip_b":
+                skip_ids = {p.row_b["id"] for p in result.fuzzy_pairs}
+                base_rows = [r for r in result.rows if r["id"] not in skip_ids]
+            else:
+                base_rows = result.rows
+
+            n_skipped_fuzzy = len(result.rows) - len(base_rows)
+            st.info(
+                f"**{len(base_rows)} row(s) selected for import**"
+                + (f" — {n_skipped_fuzzy} near-duplicate(s) skipped" if n_skipped_fuzzy else "")
+                + (
+                    "; rows already in the DB are skipped unless "
+                    "*Replace existing uploaded questions* is checked"
+                    if result.n_already_in_db else ""
+                )
+                + "."
+            )
+
             # Preview
-            has_steps = any(r.get("solution_steps") for r in result.rows[:10])
+            has_steps = any(r.get("solution_steps") for r in base_rows[:10])
             preview = []
-            for r in result.rows[:10]:
+            for r in base_rows[:10]:
                 row_preview = {
                     "stem": r["stem"][:70] + ("…" if len(r["stem"]) > 70 else ""),
                     "key": r["key"],
@@ -393,16 +420,9 @@ stem,key,topic,difficulty,solution_steps
                 if has_steps:
                     row_preview["solution_steps"] = (r.get("solution_steps") or "")[:60]
                 preview.append(row_preview)
-            st.dataframe(preview, use_container_width=True)
-            if len(result.rows) > 10:
-                st.caption(f"Showing 10 of {len(result.rows)} rows.")
-
-            # Apply fuzzy dedup choice
-            if dedup_choice == "skip_b":
-                skip_ids = {p.row_b["id"] for p in result.fuzzy_pairs}
-                base_rows = [r for r in result.rows if r["id"] not in skip_ids]
-            else:
-                base_rows = result.rows
+            st.dataframe(preview, width="stretch")
+            if len(base_rows) > 10:
+                st.caption(f"Showing 10 of {len(base_rows)} rows.")
 
             # Optional subsampling
             use_sample = st.checkbox(
@@ -431,7 +451,8 @@ stem,key,topic,difficulty,solution_steps
 
             if st.button("⬆ Import into database", type="primary", disabled=(role != "Organizer")):
                 n = import_rows(_seed_rows, replace=replace, filename=uploaded_file.name)
-                st.success(
+                # Stash the message: st.rerun() would otherwise wipe it before it renders
+                st.session_state["upload_import_msg"] = (
                     f"Imported **{n}** new question(s) from `{uploaded_file.name}`. "
                     "They appear in the Evaluate tab immediately."
                 )
@@ -460,7 +481,7 @@ stem,key,topic,difficulty,solution_steps
             ).all()
         st.dataframe(
             [{"file": r[0], "questions": r[1]} for r in fname_rows],
-            use_container_width=True,
+            width="stretch",
         )
         if st.button(f"🗑 Delete all {n_uploaded} uploaded questions", disabled=(role != "Organizer")):
             from frontier_lens.upload import delete_uploaded
