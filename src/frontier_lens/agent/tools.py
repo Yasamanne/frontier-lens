@@ -116,6 +116,8 @@ def handle(
     gen_id: str,
     fail_model: str,
     rl_split: str = "train",
+    log_fn=None,
+    calibration_k: int | None = None,
 ) -> str:
     if name == "estimate_pass_rate":
         if rl_split != "train":
@@ -126,7 +128,8 @@ def handle(
         if not result.ok:
             return json.dumps({"ok": False, "reason": result.reason})
         stats = estimate_pass_rate(
-            args["stem"], result.stdout, bool(args.get("numeric", True))
+            args["stem"], result.stdout, bool(args.get("numeric", True)),
+            k=calibration_k, log_fn=log_fn,
         )
         return json.dumps({"ok": True, "key": result.stdout, **stats})
     if name == "get_cell_failures":
@@ -159,29 +162,36 @@ def handle(
         stem = set((args.get("stem") or "").lower().split())
         engine = get_engine()
         with engine.connect() as conn:
-            rows = conn.execute(
-                text("SELECT id, stem FROM questions WHERE source='seed' LIMIT 200")
+            seed_rows = conn.execute(
+                text("SELECT id, stem, 'seed' as kind FROM questions WHERE source='seed' LIMIT 200")
+            ).mappings().all()
+            rejected_rows = conn.execute(
+                text("SELECT id, stem, 'rejected' as kind FROM candidates WHERE status='rejected' LIMIT 200")
             ).mappings().all()
         scored = []
-        for r in rows:
-            toks = set(r["stem"].lower().split())
+        for r in list(seed_rows) + list(rejected_rows):
+            toks = set((r["stem"] or "").lower().split())
             if not toks:
                 continue
             score = len(stem & toks) / len(stem | toks)
-            scored.append((score, r["id"]))
+            scored.append((score, r["id"], r["kind"]))
         scored.sort(reverse=True)
-        return json.dumps([{"id": i, "score": s} for s, i in scored[:5]])
+        return json.dumps([{"id": i, "score": round(s, 3), "kind": k} for s, i, k in scored[:8]])
     if name == "submit_candidate":
         raw = json.dumps(args)
+        mode = args.pop("_mode", "agent")  # allow caller to override mode label
+        fail_ids = [fail_model] if (rl_split == "train" and fail_model) else []
         cid = _store_candidate(
             raw,
             args["topic"],
             args["band"],
             gen_id,
-            "agent",
-            [fail_model] if rl_split == "train" else [],
+            mode,
+            fail_ids,
             rl_split=rl_split,
             calibrate=rl_split == "train",
+            log_fn=log_fn,
+            calibration_k=calibration_k,
         )
         return json.dumps({"candidate_id": cid})
     return json.dumps({"error": f"unknown tool {name}"})
