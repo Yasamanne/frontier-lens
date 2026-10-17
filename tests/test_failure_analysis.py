@@ -101,4 +101,4 @@ def test_summary_text_with_data():
     assert "format" in text.lower()
 
 
-import pytest  # noqa: E402  (placed here to keep imports at the top clean in practice)
+import pytest

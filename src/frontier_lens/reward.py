@@ -11,7 +11,7 @@ Id is stable for RL exports.
 from __future__ import annotations
 
 import re
-from typing import Callable
+from collections.abc import Callable
 
 from frontier_lens.parse import FINAL_RE, normalize
 

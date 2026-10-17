@@ -7,6 +7,7 @@ Knob: steps (10..20), counting the final half-up rounding.
 from __future__ import annotations
 
 import random
+import typing
 
 from frontier_lens.templates.procedural import bank
 from frontier_lens.templates.spec import ItemSpec
@@ -201,7 +202,7 @@ class _Chain:
                 return
         self.apply("add")
 
-    _QUESTION_POOL = [
+    _QUESTION_POOL: typing.ClassVar[list[str]] = [
         "what is the final dollar amount?",
         "what dollar amount results after applying all steps?",
         "what is the dollar amount at the end of the calculation?",

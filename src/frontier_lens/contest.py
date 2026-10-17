@@ -151,7 +151,7 @@ def run_contest(
             _judge_provider = OpenAICompatibleProvider(
                 _judge_spec.base_url or "", _judge_spec.api_key_env
             )
-            def judge_fn(prompt: str) -> str:  # noqa: E731
+            def judge_fn(prompt: str) -> str:
                 return _judge_provider.complete(
                     prompt, _judge_spec.model, skip_correction=True
                 ).text
@@ -453,7 +453,8 @@ def generate_results_csv(
       {model}_pass_rate.
     Final column: needs_sme_review (True if all attempts across all models failed).
     """
-    import csv, io as _io
+    import csv
+    import io as _io
 
     engine = get_engine()
     all_model_ids = primary_model_ids + ([verifier_model_id] if verifier_model_id else [])

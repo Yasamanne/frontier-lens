@@ -24,7 +24,6 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 from sqlalchemy import text
 

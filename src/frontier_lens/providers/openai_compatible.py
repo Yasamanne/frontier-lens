@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import typing
 
 from openai import (
     APIConnectionError,
@@ -57,7 +58,7 @@ class OpenAICompatibleProvider:
                 # Do not send tools. OpenRouter treats "tools": null as a tool-calling
                 # request and drops providers that do not support tools. For
                 # meta-llama/llama-4-scout that leaves only a BYOK Google endpoint.
-                kwargs: dict = dict(model=model, messages=messages)
+                kwargs: dict = {"model": model, "messages": messages}
                 if extra_body:
                     kwargs["extra_body"] = extra_body
                 if response_format:
@@ -72,7 +73,7 @@ class OpenAICompatibleProvider:
 
     # JSON schema used when json_mode=True on the model spec.
     # The model must produce {"reasoning": "...", "answer": "..."}.
-    _JSON_SCHEMA = {
+    _JSON_SCHEMA: typing.ClassVar[dict] = {
         "type": "json_schema",
         "json_schema": {
             "name": "contest_answer",
@@ -125,8 +126,8 @@ class OpenAICompatibleProvider:
 
         # Strip residual <think>…</think> blocks that some models leak even when
         # thinking is disabled (DeepSeek, Qwen3).
-        import re as _re
         import json as _json
+        import re as _re
         text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
 
         # JSON mode: convert {"reasoning": "...", "answer": "42"} → FINAL: 42

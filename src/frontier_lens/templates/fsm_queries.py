@@ -111,7 +111,7 @@ def _to_prose(
     sym_str = ", ".join(f'"{s}"' for s in symbols)
     lines = [
         f"A finite state machine has {n_states} states: {', '.join(states)}.",
-        f"The machine starts in state S0.",
+        "The machine starts in state S0.",
         f"It reads the input string one character at a time over alphabet {{{sym_str}}}.",
         "Each (state, character) pair maps to exactly one next state.",
         "",

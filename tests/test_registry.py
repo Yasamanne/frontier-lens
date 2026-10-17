@@ -5,8 +5,6 @@ def test_licenses_and_generator_family_split():
     specs = load_yaml()
     assert all(s.license for s in specs)
     policy = {s.family for s in specs if s.role == "policy"}
-    reference = {s.family for s in specs if s.role == "reference"}
-    generator = {s.family for s in specs if s.role == "generator"}
     assert policy
     # Generator family may overlap policy/reference — emits a warning, not an error
     # (DeepSeek is intentionally used for both generator and reference roles)

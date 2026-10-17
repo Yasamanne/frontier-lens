@@ -99,7 +99,7 @@ def _to_prose(leaves: list[int], depth: int, branching: int, question: str) -> s
 def _accept(spec: ItemSpec, key: str) -> bool:
     """Reject trivially easy trees (root = max or min of all leaves)."""
     try:
-        root_val = int(key)
+        int(key)  # raises ValueError/TypeError if key is not an integer
     except (ValueError, TypeError):
         return False
     # The leaves aren't stored in params, but we can check via the code not available here.

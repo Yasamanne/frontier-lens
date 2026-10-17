@@ -20,6 +20,7 @@ from frontier_lens.split import EVAL_TEMPLATES
 from frontier_lens.stats import in_learnable_band, pass_at_k, pass_rate
 from frontier_lens.templates import all_specs
 
+
 def _extract_json(text: str) -> dict:
     """Robustly extract the first JSON object from a model response.
 
@@ -617,7 +618,8 @@ def generate_rescue_sft_csv(results: list[dict]) -> str:
       hint_2_text, stem_hint_2,  ...  (up to max hints attempted)
       rescue_level_reached
     """
-    import csv as _csv, io as _io
+    import csv as _csv
+    import io as _io
 
     unrescued = [r for r in results if not r.get("rl_suitable")]
     if not unrescued:
@@ -807,8 +809,8 @@ def rescue_with_hints(
                  hint=hint_text, parse_ok=parse_ok, parse_error=parse_error,
                  raw_response_preview=(completion.text or "")[:400])
 
-            def _cal_log(event: str, **fields):  # noqa: E306
-                _log(event, question_id=qid, level=level, **fields)
+            def _cal_log(event: str, _qid=qid, _level=level, **fields):
+                _log(event, question_id=_qid, level=_level, **fields)
 
             stats = _calibrate_collect(
                 hinted_stem, q["key"], bool(q["numeric"]),
@@ -950,8 +952,8 @@ def generate_similar_questions(
             completion = provider.complete(prompt, gen.model, skip_correction=True)
 
             # Forward calibration-sample events from _store_candidate → estimate_pass_rate
-            def _cal_log(event: str, **fields):
-                _log(event, source_id=q["id"], attempt=attempt, **fields)
+            def _cal_log(event: str, _sid=q["id"], _att=attempt, **fields):
+                _log(event, source_id=_sid, attempt=_att, **fields)
 
             # We need to intercept the sandbox result too; patch a wrapper complete_fn
             # that also logs calibration samples via _cal_log.
@@ -1027,7 +1029,6 @@ def _run_similar_agent(
     Returns the ``candidate_id`` if the agent called ``submit_candidate``,
     else ``None``.
     """
-    import os as _os
 
     from frontier_lens.agent.tools import handle
 
@@ -1095,8 +1096,8 @@ def _run_similar_agent(
                                if k != "_mode"},
             )
 
-            def _handle_log(evt: str, **f):
-                _log(f"handle_{evt}", step=step + 1, **f)
+            def _handle_log(evt: str, _step=step, **f):
+                _log(f"handle_{evt}", step=_step + 1, **f)
 
             result_str = handle(
                 tool_name, args,
@@ -1258,7 +1259,7 @@ def _review_similar_question(
     seed_key: str,
     band: str,
     prior_stems: list[str],
-    provider: "OpenAICompatibleProvider",
+    provider: OpenAICompatibleProvider,
     model: str,
     rejected_stems: list[str] | None = None,
 ) -> dict:
@@ -1324,7 +1325,6 @@ def generate_similar_with_review(
 
     Returns same schema as :func:`generate_similar_questions`.
     """
-    import os as _os
     from frontier_lens.registry import judge_spec as _judge_spec_fn
 
     def _log(event: str, **fields):
@@ -1424,7 +1424,6 @@ def generate_similar_with_review(
                 code_gen  = payload.get("code") or ""
                 lang_gen  = payload.get("lang") or "python"
                 files_gen = payload.get("input_files") or {}
-                numeric_gen = bool(payload.get("numeric", True))
 
                 sandbox_result = execute(lang_gen, code_gen, files_gen, twice=True)
                 _log("review_sandbox", index=idx, fix_iter=fix_iter,
@@ -1469,8 +1468,8 @@ def generate_similar_with_review(
 
             # ── Store result ──────────────────────────────────────────────
             if passed and current_raw:
-                def _cal_log(event: str, **fields):
-                    _log(event, source_id=q["id"], attempt=attempt, **fields)
+                def _cal_log(event: str, _sid=q["id"], _att=attempt, **fields):
+                    _log(event, source_id=_sid, attempt=_att, **fields)
 
                 cid = _store_candidate(
                     current_raw, q["topic"], q["band"],
