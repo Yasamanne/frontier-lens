@@ -1,0 +1,4 @@
+# Secrets — keep out of Cursor index and agent context
+.env
+.env.*
+!.env.example

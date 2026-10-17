@@ -1,0 +1,20 @@
+[theme]
+base = "dark"
+
+# Deep space dark background
+backgroundColor      = "#0C0C1A"
+
+# Rich dark purple for sidebar and cards
+secondaryBackgroundColor = "#13132A"
+
+# Warm orange — buttons, sliders, active widgets
+primaryColor         = "#FF6B2B"
+
+# Off-white with a faint purple tint for readability
+textColor            = "#E8E6F0"
+
+font = "sans serif"
+
+[server]
+headless = true
+enableCORS = false
