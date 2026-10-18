@@ -29,6 +29,10 @@ from frontier_lens.contest import (
 from frontier_lens.db import get_engine
 
 
+class RunInProgress(RuntimeError):
+    """Another evaluation run is alive; only one runs at a time (single SQLite writer)."""
+
+
 def stdout_log_path(run_id: str) -> Path:
     return LOGS_DIR / f"{run_id}.stdout.log"
 
@@ -38,22 +42,44 @@ def tail(run_id: str, n: int = 20) -> str:
 
 
 def create(config: dict) -> str:
-    """Store a queued run with *config* (see ``contest.run_config``) and return its id."""
+    """Store a queued run with *config* (see ``contest.run_config``) and return its id.
+
+    Raises :class:`RunInProgress` if another run is alive.
+    """
+    runstate.reap_stale()
     run_id = uuid.uuid4().hex[:12]
     k = config.get("k")
-    runstate.insert_run(
+    stored = runstate.insert_run(
         run_id,
         config["question_ids"],
         max(POLICY_K, REFERENCE_K) if k is None else k,
         config.get("notes"),
         config,
         status="queued",
+        exclusive=True,
     )
+    if not stored:
+        raise RunInProgress("another evaluation run is in progress")
     return run_id
+
+
+def _arm(run_id: str) -> None:
+    """Make *run_id* a fresh queued run, unless another run is alive (atomic)."""
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            text(
+                "UPDATE eval_runs SET status='queued', heartbeat_at=:hb, error=NULL, pid=NULL "
+                f"WHERE id=:id AND {runstate.NO_OTHER_ACTIVE_RUN}"
+            ),
+            {"id": run_id, "hb": runstate.now_iso(), "cutoff": runstate.active_cutoff()},
+        )
+    if result.rowcount == 0:
+        raise RunInProgress("another evaluation run is in progress")
 
 
 def launch(run_id: str) -> int:
     """Start (or resume) *run_id* in a detached process; return its pid."""
+    runstate.reap_stale()
     row = runstate.load_run(run_id)
     if row is None:
         raise RuntimeError(f"unknown run {run_id}")
@@ -65,9 +91,7 @@ def launch(run_id: str) -> int:
     # Fresh heartbeat gives the child STALE_SEC to start before it looks dead;
     # clearing pid makes any older process still on this run exit
     # (see runstate.owned_by). The child takes it over with runstate.claim.
-    runstate.set_fields(
-        run_id, status="queued", heartbeat_at=runstate.now_iso(), error=None, pid=None
-    )
+    _arm(run_id)
     pid = runstate.spawn_detached("frontier_lens.eval_job", run_id, stdout_log_path(run_id))
     runstate.set_fields(run_id, pid=pid)
     return pid
@@ -75,7 +99,11 @@ def launch(run_id: str) -> int:
 
 def start(config: dict) -> str:
     run_id = create(config)
-    launch(run_id)
+    try:
+        launch(run_id)
+    except Exception as exc:
+        runstate.finish(run_id, "failed", error=f"{type(exc).__name__}: {exc}"[:2000])
+        raise
     return run_id
 
 
@@ -94,7 +122,11 @@ def flag_for_sme(question_ids: list[str]) -> None:
     with get_engine().begin() as conn:
         for qid in question_ids:
             conn.execute(
-                text("UPDATE questions SET sme_flagged=1, sme_source='evaluate' WHERE id=:id"),
+                text(
+                    "UPDATE questions SET sme_flagged=1, sme_source='evaluate' "
+                    "WHERE id=:id AND COALESCE(sme_flagged, 0) != 2 "  # keep SME 'broken' verdicts
+                    "AND COALESCE(sme_validated_key, '') != key"  # SME already vouched for this key
+                ),
                 {"id": qid},
             )
 
@@ -134,7 +166,10 @@ def run_job(run_id: str) -> None:
                 )
                 if failed:
                     print(f"verifier {verifier} on {len(failed)} all-wrong question(s)", flush=True)
-                    run_verifier(run_id, verifier, failed, k_eff)
+                    run_verifier(
+                        run_id, verifier, failed, k_eff,
+                        judge_model_id=cfg.get("judge_model_id"),
+                    )
             runstate.set_fields(run_id, phase="flagging")
             flag_for_sme(
                 runstate.zero_correct_questions(run_id, models + ([verifier] if verifier else []))
@@ -163,7 +198,10 @@ def main() -> None:
                 f"run {args.run_id} is already running (pid {row.get('pid')}); "
                 "stop it from the Evaluate page first"
             )
-        runstate.set_fields(args.run_id, status="queued", pid=None)  # claimable again
+        try:
+            _arm(args.run_id)  # claimable again, unless another run is alive
+        except RunInProgress as exc:
+            raise SystemExit(str(exc))
     run_job(args.run_id)
 
 

@@ -39,7 +39,7 @@ from sqlalchemy import text
 
 from frontier_lens import eval_job, runstate
 from frontier_lens.config import OPENROUTER_API_KEY
-from frontier_lens.contest import generate_results_csv, run_config
+from frontier_lens.contest import generate_results_csv, run_config, update_key_and_regrade
 from frontier_lens.db import get_engine
 from frontier_lens.registry import judge_spec, load_yaml
 from frontier_lens.runlog import logs_for_download
@@ -196,7 +196,7 @@ def _resolve_question_ids(
     """Return the ordered list of question IDs that would be scored."""
     with engine.connect() as conn:
         if uploaded_only:
-            sql = "SELECT id FROM questions WHERE source='uploaded'"
+            sql = "SELECT id FROM questions WHERE source='uploaded' AND COALESCE(sme_flagged, 0) != 2"
             params: dict = {}
             if selected_filename:
                 sql += " AND COALESCE(upload_filename,'(unnamed)')=:fname"
@@ -206,7 +206,8 @@ def _resolve_question_ids(
         else:
             sql = (
                 "SELECT id FROM questions "
-                "WHERE source IN ('seed','generated','uploaded')"
+                "WHERE source IN ('seed','generated','uploaded') "
+                "AND COALESCE(sme_flagged, 0) != 2"
             )
             if train_only:
                 sql += " AND split='train'"
@@ -388,6 +389,18 @@ if role == "Viewer":
 
 can_run = bool(chosen) and role == "Organizer" and bool(OPENROUTER_API_KEY) and not _active
 
+if _active:
+    # One run at a time (single SQLite writer, shared API rate limits), whatever the dataset.
+    _blk = _active[0]
+    _bp = runstate.progress(_blk["id"])
+    _bplanned = _bp["planned_primary"]
+    st.info(
+        f"🔒 Run `{_blk['id']}` (batch: {_blk['notes'] or 'live'}) is in progress"
+        + (f", {_bp['primary']['done']}/{_bplanned} samples" if _bplanned else "")
+        + ". Only one evaluation runs at a time, so Evaluate unlocks when it finishes"
+        + (" or you stop it above." if role == "Organizer" else ".")
+    )
+
 # ── Overlap detection state machine ──────────────────────────────────────
 # State: None → detect → waiting_choice → running
 _eval_state = st.session_state.get("eval_state", None)
@@ -524,15 +537,20 @@ if st.session_state.get("eval_state") == "running":
         st.stop()
 
     # Primary contest, verifier, and SME flagging all run in the background job.
-    run_id = eval_job.start(
-        run_config(
-            chosen, k, qids_to_run,
-            notes=source_label,
-            reuse_prev_runs=reuse_prev,
-            judge_model_id=judge_id,
-            verifier_model=verifier_id,
+    try:
+        run_id = eval_job.start(
+            run_config(
+                chosen, k, qids_to_run,
+                notes=source_label,
+                reuse_prev_runs=reuse_prev,
+                judge_model_id=judge_id,
+                verifier_model=verifier_id,
+            )
         )
-    )
+    except eval_job.RunInProgress:
+        # Someone else (another tab, the CLI) started a run after this page rendered.
+        st.warning("Another evaluation run just started. Wait for it to finish, then try again.")
+        st.stop()
     st.session_state.pop("eval_last_result", None)
     st.session_state["eval_watch_run"] = run_id
     st.session_state["last_run_id"] = run_id
@@ -595,7 +613,11 @@ else:
                 disabled=role != "Organizer" or bool(_active) or (needs_key and not OPENROUTER_API_KEY),
                 help="Organizer only; disabled while another run is in progress.",
             ):
-                eval_job.launch(sel_id)
+                try:
+                    eval_job.launch(sel_id)
+                except eval_job.RunInProgress:
+                    st.warning("Another evaluation run just started. Resume once it finishes.")
+                    st.stop()
                 st.session_state.pop("eval_last_result", None)
                 st.session_state["eval_watch_run"] = sel_id
                 st.session_state["last_run_id"] = sel_id
@@ -757,7 +779,10 @@ elif sme_qs:
                 if col_valid.button("✅ Mark valid", key=f"sme-valid-{q['id']}"):
                     with engine.begin() as conn2:
                         conn2.execute(
-                            text("UPDATE questions SET sme_flagged=0 WHERE id=:id"),
+                            text(
+                                "UPDATE questions SET sme_flagged=0, sme_validated_key=key "
+                                "WHERE id=:id"
+                            ),
                             {"id": q["id"]},
                         )
                     # Remove from current run's list too
@@ -785,16 +810,15 @@ elif sme_qs:
                     "Edit gold key", value=q["key"], key=f"sme-key-{q['id']}"
                 )
                 if new_key != q["key"] and col_key.button("💾 Save key", key=f"sme-save-{q['id']}"):
-                    with engine.begin() as conn2:
-                        conn2.execute(
-                            text("UPDATE questions SET key=:k, sme_flagged=0 WHERE id=:id"),
-                            {"k": new_key, "id": q["id"]},
-                        )
+                    n_regraded = update_key_and_regrade(q["id"], new_key)
                     if _sme_run_qids and q["id"] in _sme_run_qids:
                         st.session_state["sme_current_run_qids"] = [
                             x for x in _sme_run_qids if x != q["id"]
                         ]
-                    st.success(f"Key updated to `{new_key}`. Removed from SME queue.")
+                    st.success(
+                        f"Key updated to `{new_key}`. Re-graded stored attempts "
+                        f"({n_regraded} changed). Removed from SME queue."
+                    )
                     st.rerun()
             else:
                 st.info("Switch Role to **Organizer** or **SME** to take action.")

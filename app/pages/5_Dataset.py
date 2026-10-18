@@ -78,21 +78,7 @@ with engine.connect() as conn:
         text("SELECT COUNT(*) FROM candidates WHERE status='approved'")
     ).scalar() or 0
 
-    dead_zone_rows = conn.execute(
-        text("""
-            SELECT COUNT(DISTINCT a.question_id)
-            FROM attempts a
-            JOIN questions q ON q.id = a.question_id
-            WHERE a.run_id = :r AND a.model_id = :m
-              AND q.code IS NOT NULL AND TRIM(q.code) != ''
-              AND COALESCE(q.sme_flagged, 0) = 0
-            GROUP BY a.question_id
-            HAVING SUM(a.is_correct) = 0
-              AND (COUNT(*) - SUM(a.unparsable)) > 0
-        """),
-        {"r": run_id, "m": model_id},
-    ).fetchall()
-    n_sft = len(dead_zone_rows)
+    n_sft = len(zero_pass_questions(run_id, model_id, include_uncoded=True))
 
     rescued_ids = conn.execute(
         text("SELECT DISTINCT source_fail_ids FROM candidates WHERE generator_mode='light_hint' AND status IN ('pending','approved')")
@@ -213,8 +199,9 @@ with tab_sft:
         "the model clearly needs direct exposure to similar solved examples."
     )
 
-    # Dead-zone questions with verifier code
-    dead_qs = zero_pass_questions(run_id, model_id)
+    # Dead-zone questions. Uploaded ones have no verifier code, so rescue can never
+    # run on them; they go straight into this pool.
+    dead_qs = zero_pass_questions(run_id, model_id, include_uncoded=True)
 
     if not dead_qs:
         st.info("No dead-zone questions for this run/model.")

@@ -167,7 +167,11 @@ def load_sft_rows(run_id: str | None = None) -> list[SftRow]:
                 SELECT a.raw_output, a.model_id, a.question_id, q.stem
                 FROM attempts a JOIN questions q ON q.id=a.question_id
                 JOIN models m ON m.id=a.model_id
+                JOIN eval_runs er ON er.id=a.run_id
                 WHERE a.run_id=:r AND a.is_correct=1 AND m.role IN ('policy', 'reference')
+                  -- Verifier samples only re-check questions the primary failed; they are
+                  -- not SFT data (those questions go to hint generation instead).
+                  AND a.model_id != COALESCE(json_extract(er.config_json, '$.verifier_model'), '')
                   -- Train only: eval traces in SFT would leak the held-out set into training.
                   AND q.split = 'train'
                   -- Skip items an SME marked broken (their gold key is suspect).

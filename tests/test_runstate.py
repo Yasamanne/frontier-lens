@@ -195,3 +195,138 @@ def test_heartbeat_stops_quietly_after_own_finish(tmp_db):
         runstate.finish("own", "complete")
         time.sleep(0.1)
     assert runstate.load_run("own")["status"] == "complete"
+
+
+def test_broken_questions_are_not_sampled_or_reflagged(tmp_db):
+    from frontier_lens.contest import select_questions
+
+    for qid in ("ok", "broken"):
+        _add_question(tmp_db, qid, "4")
+    with tmp_db.begin() as conn:
+        conn.execute(text("UPDATE questions SET sme_flagged=2 WHERE id='broken'"))
+    assert [q["id"] for q in select_questions()] == ["ok"]
+
+    eval_job.flag_for_sme(["ok", "broken"])
+    with tmp_db.connect() as conn:
+        flags = dict(conn.execute(text("SELECT id, sme_flagged FROM questions")).all())
+    assert flags == {"ok": 1, "broken": 2}
+
+
+def test_key_edit_regrades_stored_attempts(tmp_db):
+    from frontier_lens.contest import update_key_and_regrade
+
+    _add_question(tmp_db, "q1", "4")
+    runstate.insert_run("r", ["q1"], 2, None, {}, status="complete")
+    with tmp_db.begin() as conn:
+        for i, out in enumerate(["FINAL: 5", "no final line"], start=1):
+            conn.execute(
+                text(
+                    "INSERT INTO attempts (run_id, model_id, question_id, sample_index, "
+                    "raw_output, is_correct, unparsable) VALUES ('r', 'm', 'q1', :i, :o, 0, 0)"
+                ),
+                {"i": i, "o": out},
+            )
+        conn.execute(text("UPDATE questions SET sme_flagged=1 WHERE id='q1'"))
+    assert update_key_and_regrade("q1", "5") == 1
+    with tmp_db.connect() as conn:
+        rows = conn.execute(
+            text("SELECT is_correct, unparsable FROM attempts ORDER BY sample_index")
+        ).all()
+        flag = conn.execute(text("SELECT sme_flagged FROM questions")).scalar()
+    assert rows == [(1, 0), (0, 1)]
+    assert flag == 0
+
+
+def test_zero_pass_lists_uncoded_questions_only_on_request(tmp_db):
+    from frontier_lens.failure_analysis import zero_pass_questions
+
+    _add_question(tmp_db, "up", "B")  # uploaded: empty code
+    runstate.insert_run("r", ["up"], 1, None, {}, status="complete")
+    with tmp_db.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO attempts (run_id, model_id, question_id, sample_index, "
+                "raw_output, is_correct, unparsable) VALUES ('r', 'm', 'up', 1, 'FINAL: A', 0, 0)"
+            )
+        )
+    assert zero_pass_questions("r", "m") == []
+    assert [q["id"] for q in zero_pass_questions("r", "m", include_uncoded=True)] == ["up"]
+
+
+def test_sme_validated_key_is_not_reflagged(tmp_db):
+    _add_question(tmp_db, "q1", "4")
+    with tmp_db.begin() as conn:
+        conn.execute(text("UPDATE questions SET sme_validated_key='4' WHERE id='q1'"))
+    eval_job.flag_for_sme(["q1"])
+    with tmp_db.connect() as conn:
+        assert conn.execute(text("SELECT sme_flagged FROM questions")).scalar() in (None, 0)
+        # A different key invalidates the earlier verdict.
+        conn.execute(text("UPDATE questions SET key='5' WHERE id='q1'"))
+        conn.commit()
+    eval_job.flag_for_sme(["q1"])
+    with tmp_db.connect() as conn:
+        assert conn.execute(text("SELECT sme_flagged FROM questions")).scalar() == 1
+
+
+def test_verifier_uses_the_same_judge_and_is_not_sft_data(tmp_db, monkeypatch):
+    import json
+
+    from frontier_lens import contest
+    from frontier_lens.export import load_sft_rows
+    from frontier_lens.failure_analysis import zero_pass_questions
+    from frontier_lens.providers.base import Completion
+    from frontier_lens.registry import sync_models
+
+    class FakeProvider:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, prompt, model, **kw):
+            # Judge prompts ask for YES/NO; contest prompts get a non-exact answer.
+            text = "YES" if "answer equivalence checker" in prompt else "FINAL: B"
+            return Completion(text=text, latency_ms=1, tokens_in=1, tokens_out=1)
+
+    monkeypatch.setattr(contest, "OpenAICompatibleProvider", FakeProvider)
+    sync_models()
+    _add_question(tmp_db, "q1", "A")
+    cfg = {"models": [POLICY], "verifier_model": "gemma4-31b"}
+    runstate.insert_run("r", ["q1"], 2, None, cfg, status="complete")
+    _add_attempt(tmp_db, "r", "q1", 1, 0)
+    with tmp_db.begin() as conn:
+        conn.execute(text("UPDATE attempts SET model_id=:m"), {"m": POLICY})
+
+    contest.run_verifier("r", "gemma4-31b", ["q1"], 1, judge_model_id="deepseek-v4.1-flash-judge")
+
+    with tmp_db.connect() as conn:
+        ver = conn.execute(
+            text("SELECT is_correct FROM attempts WHERE model_id='gemma4-31b'")
+        ).scalar()
+    assert ver == 1  # exact match fails ("B" vs "A"); the judge, as in the primary pass, accepts
+    assert load_sft_rows("r") == []  # verifier samples are not SFT data
+    # The primary still failed, so the question stays pass@k = 0 and can get hints.
+    assert [q["id"] for q in zero_pass_questions("r", POLICY, include_uncoded=True)] == ["q1"]
+    assert json.loads(runstate.load_run("r")["config_json"])["verifier_model"] == "gemma4-31b"
+
+
+def test_only_one_run_can_start_at_a_time(tmp_db, monkeypatch):
+    import pytest
+
+    cfg = {"models": [POLICY], "k": 1, "question_ids": ["q"], "notes": "a"}
+    monkeypatch.setattr(runstate, "spawn_detached", lambda *a, **k: 4242)
+    first = eval_job.start(cfg)
+    assert runstate.load_run(first)["pid"] == 4242
+
+    # A second start is refused and leaves no live run behind.
+    with pytest.raises(eval_job.RunInProgress):
+        eval_job.start({**cfg, "notes": "b"})
+    assert [r["id"] for r in runstate.active_runs()] == [first]
+
+    # An interrupted older run cannot be resumed while another is alive.
+    old = "oldrun"
+    runstate.insert_run(old, ["q"], 1, None, cfg, status="interrupted")
+    with pytest.raises(eval_job.RunInProgress):
+        eval_job.launch(old)
+
+    # Once the first run finishes, the next one may start.
+    runstate.finish(first, "complete")
+    assert eval_job.launch(old) == 4242

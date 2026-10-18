@@ -21,7 +21,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import text
@@ -59,6 +59,19 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def active_cutoff(now: datetime | None = None) -> str:
+    """ISO timestamp; a heartbeat at or after it counts as alive."""
+    return ((now or datetime.now(timezone.utc)) - timedelta(seconds=STALE_SEC)).isoformat()
+
+
+# SQL: no other evaluation run is alive. Used inside single statements so the
+# check and the write are one atomic step even with several writers.
+NO_OTHER_ACTIVE_RUN = (
+    "NOT EXISTS (SELECT 1 FROM eval_runs o WHERE o.id != :id "
+    "AND o.status IN ('queued','running') AND o.heartbeat_at >= :cutoff)"
+)
+
+
 def insert_run(
     run_id: str,
     question_ids: list[str],
@@ -66,14 +79,18 @@ def insert_run(
     notes: str | None,
     config: dict,
     status: str,
-) -> None:
+    *,
+    exclusive: bool = False,
+) -> bool:
+    """Insert a run row. With ``exclusive=True`` do nothing (return False) if another run is alive."""
+    guard = f"WHERE {NO_OTHER_ACTIVE_RUN}" if exclusive else ""
     with get_engine().begin() as conn:
-        conn.execute(
+        result = conn.execute(
             text(
-                """
+                f"""
                 INSERT INTO eval_runs (
                     id, created_at, item_set_hash, status, k, notes, config_json, heartbeat_at
-                ) VALUES (:id, :ts, :h, :status, :k, :notes, :cfg, :ts)
+                ) SELECT :id, :ts, :h, :status, :k, :notes, :cfg, :ts {guard}
                 """
             ),
             {
@@ -84,8 +101,10 @@ def insert_run(
                 "k": k,
                 "notes": notes,
                 "cfg": json.dumps(config),
+                "cutoff": active_cutoff(),
             },
         )
+    return result.rowcount > 0
 
 
 def load_run(run_id: str, *, table: str = "eval_runs") -> dict | None:

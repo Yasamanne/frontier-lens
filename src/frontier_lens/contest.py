@@ -41,6 +41,7 @@ def select_questions(
                 SELECT id, stem, key, numeric, level, topic, band, split, template,
                        params_json, source
                 FROM questions WHERE source IN ('seed','generated','uploaded')
+                  AND COALESCE(sme_flagged, 0) != 2
                 """
             )
         ).mappings().all()
@@ -102,6 +103,19 @@ def _questions(conn, levels: list[int]):
     return list(rows)
 
 
+def _build_judge_fn(specs: dict[str, ModelSpec], judge_model_id: str | None):
+    """Return a prompt -> text callable for the judge model, or None if not configured."""
+    spec = specs.get(judge_model_id) if judge_model_id else None
+    if spec is None:
+        return None
+    provider = OpenAICompatibleProvider(spec.base_url or "", spec.api_key_env)
+
+    def judge_fn(prompt: str) -> str:
+        return provider.complete(prompt, spec.model, skip_correction=True).text
+
+    return judge_fn
+
+
 def run_contest(
     model_ids: list[str] | None,
     k: int | None = None,
@@ -145,7 +159,7 @@ def run_contest(
     resumed = existing is not None and existing.get("planned_primary") is not None
     if existing is None:
         run_id = run_id or uuid.uuid4().hex[:12]
-        insert_run(
+        if not insert_run(
             run_id,
             [q["id"] for q in qrows],
             max(POLICY_K, REFERENCE_K) if k is None else k,
@@ -159,25 +173,16 @@ def run_contest(
                 judge_model_id=judge_model_id,
             ),
             status="queued",
-        )
+            exclusive=True,
+        ):
+            raise RuntimeError("another evaluation run is in progress")
     if not claim(run_id):
         raise RuntimeError(f"run {run_id} was stopped before it started")
     set_fields(run_id, phase="primary")
 
     fixture = FixtureProvider() if replay else None
 
-    # Build judge_fn if a judge model is configured
-    judge_fn = None
-    if judge_model_id:
-        _judge_spec = specs.get(judge_model_id)
-        if _judge_spec:
-            _judge_provider = OpenAICompatibleProvider(
-                _judge_spec.base_url or "", _judge_spec.api_key_env
-            )
-            def judge_fn(prompt: str) -> str:
-                return _judge_provider.complete(
-                    prompt, _judge_spec.model, skip_correction=True
-                ).text
+    judge_fn = _build_judge_fn(specs, judge_model_id)
 
     recorded: list[dict] = []
     write_event(
@@ -451,13 +456,16 @@ def run_verifier(
     verifier_model_id: str,
     failed_question_ids: list[str],
     k: int,
+    judge_model_id: str | None = None,
 ) -> None:
     """Run the verifier model on questions the primary model completely failed.
 
     Attempts are stored in the normal ``attempts`` table with the verifier's
     model_id, so they participate in all existing queries transparently.
+    Grading matches the primary pass: pass the same *judge_model_id*.
     """
     specs = {m.id: m for m in sync_models()}
+    judge_fn = _build_judge_fn(specs, judge_model_id)
     spec = specs.get(verifier_model_id)
     if spec is None:
         raise RuntimeError(f"unknown model {verifier_model_id}")
@@ -510,7 +518,9 @@ def run_verifier(
             )
         numeric = bool(q["numeric"])
         parsed = parse_final(completion.text, numeric=numeric)
-        reward, parsed_ans, unparsable = grade(completion.text, q["key"], numeric=numeric)
+        reward, parsed_ans, unparsable = grade(
+            completion.text, q["key"], numeric=numeric, judge_fn=judge_fn
+        )
         if parsed_ans is not None:
             parsed.answer = parsed_ans
         parsed.unparsable = unparsable
@@ -544,6 +554,44 @@ def run_verifier(
             f"correct={bool(reward)} unparsable={parsed.unparsable}",
             flush=True,
         )
+
+
+def update_key_and_regrade(question_id: str, new_key: str) -> int:
+    """Set a question's gold key and re-grade its stored attempts against it.
+
+    Returns how many attempts changed their ``is_correct``. Uses exact match
+    only: the LLM judge is not re-run, so a sample earlier credited by the
+    judge keeps no credit unless it now matches the key exactly.
+    """
+    engine = get_engine()
+    changed = 0
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE questions SET key=:k, sme_flagged=0, sme_validated_key=:k WHERE id=:id"
+            ),
+            {"k": new_key, "id": question_id},
+        )
+        numeric = bool(
+            conn.execute(
+                text("SELECT numeric FROM questions WHERE id=:id"), {"id": question_id}
+            ).scalar()
+        )
+        rows = conn.execute(
+            text("SELECT id, raw_output, is_correct FROM attempts WHERE question_id=:id"),
+            {"id": question_id},
+        ).mappings().all()
+        for a in rows:
+            reward, parsed_ans, unparsable = grade(a["raw_output"] or "", new_key, numeric=numeric)
+            conn.execute(
+                text(
+                    "UPDATE attempts SET is_correct=:ok, parsed_answer=:ans, unparsable=:unp "
+                    "WHERE id=:id"
+                ),
+                {"ok": reward, "ans": parsed_ans, "unp": int(unparsable), "id": a["id"]},
+            )
+            changed += int(bool(a["is_correct"]) != bool(reward))
+    return changed
 
 
 def generate_results_csv(
