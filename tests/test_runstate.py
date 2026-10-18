@@ -251,3 +251,18 @@ def test_zero_pass_lists_uncoded_questions_only_on_request(tmp_db):
         )
     assert zero_pass_questions("r", "m") == []
     assert [q["id"] for q in zero_pass_questions("r", "m", include_uncoded=True)] == ["up"]
+
+
+def test_sme_validated_key_is_not_reflagged(tmp_db):
+    _add_question(tmp_db, "q1", "4")
+    with tmp_db.begin() as conn:
+        conn.execute(text("UPDATE questions SET sme_validated_key='4' WHERE id='q1'"))
+    eval_job.flag_for_sme(["q1"])
+    with tmp_db.connect() as conn:
+        assert conn.execute(text("SELECT sme_flagged FROM questions")).scalar() in (None, 0)
+        # A different key invalidates the earlier verdict.
+        conn.execute(text("UPDATE questions SET key='5' WHERE id='q1'"))
+        conn.commit()
+    eval_job.flag_for_sme(["q1"])
+    with tmp_db.connect() as conn:
+        assert conn.execute(text("SELECT sme_flagged FROM questions")).scalar() == 1

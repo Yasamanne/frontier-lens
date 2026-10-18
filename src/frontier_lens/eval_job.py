@@ -96,7 +96,8 @@ def flag_for_sme(question_ids: list[str]) -> None:
             conn.execute(
                 text(
                     "UPDATE questions SET sme_flagged=1, sme_source='evaluate' "
-                    "WHERE id=:id AND COALESCE(sme_flagged, 0) != 2"  # keep SME 'broken' verdicts
+                    "WHERE id=:id AND COALESCE(sme_flagged, 0) != 2 "  # keep SME 'broken' verdicts
+                    "AND COALESCE(sme_validated_key, '') != key"  # SME already vouched for this key
                 ),
                 {"id": qid},
             )

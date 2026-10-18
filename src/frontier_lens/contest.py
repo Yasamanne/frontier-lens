@@ -558,7 +558,9 @@ def update_key_and_regrade(question_id: str, new_key: str) -> int:
     changed = 0
     with engine.begin() as conn:
         conn.execute(
-            text("UPDATE questions SET key=:k, sme_flagged=0 WHERE id=:id"),
+            text(
+                "UPDATE questions SET key=:k, sme_flagged=0, sme_validated_key=:k WHERE id=:id"
+            ),
             {"k": new_key, "id": question_id},
         )
         numeric = bool(

@@ -179,7 +179,7 @@ def _migrate(conn) -> None:
             ("planned_verifier", "INTEGER"),
             ("error", "TEXT"),
         ],
-        "questions": [("reward_fn", "TEXT"), ("audit_batch_id", "TEXT"), ("upload_filename", "TEXT"), ("sme_flagged", "INTEGER"), ("sme_source", "TEXT")],
+        "questions": [("reward_fn", "TEXT"), ("audit_batch_id", "TEXT"), ("upload_filename", "TEXT"), ("sme_flagged", "INTEGER"), ("sme_source", "TEXT"), ("sme_validated_key", "TEXT")],
     }
     for table, cols in extras.items():
         existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}

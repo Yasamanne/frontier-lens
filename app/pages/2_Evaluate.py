@@ -758,7 +758,10 @@ elif sme_qs:
                 if col_valid.button("✅ Mark valid", key=f"sme-valid-{q['id']}"):
                     with engine.begin() as conn2:
                         conn2.execute(
-                            text("UPDATE questions SET sme_flagged=0 WHERE id=:id"),
+                            text(
+                                "UPDATE questions SET sme_flagged=0, sme_validated_key=key "
+                                "WHERE id=:id"
+                            ),
                             {"id": q["id"]},
                         )
                     # Remove from current run's list too
