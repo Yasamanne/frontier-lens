@@ -133,18 +133,20 @@ def test_provider_merges_extra_body_with_thinking_flag(monkeypatch):
 
 
 def test_provider_sends_temperature_only_when_asked(monkeypatch):
+    from types import SimpleNamespace
+
     from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     provider = OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
     bodies: list[dict] = []
 
-    class Resp:
-        usage = None
-        choices = [type("C", (), {"message": type("M", (), {"content": "ok"})()})()]
-
+    resp = SimpleNamespace(
+        usage=None,
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+    )
     monkeypatch.setattr(
-        provider.client.chat.completions, "create", lambda **kw: bodies.append(kw) or Resp()
+        provider.client.chat.completions, "create", lambda **kw: bodies.append(kw) or resp
     )
     provider.complete("p", "m", skip_correction=True)
     provider.complete("p", "m", skip_correction=True, temperature=0.0)
