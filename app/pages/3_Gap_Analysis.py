@@ -97,7 +97,9 @@ st.subheader("Policy pass-rate histogram")
 items = policy_item_rates(run_id, model_id, split="train")
 if items:
     counts = histogram_counts([it["pass_rate"] for it in items])
-    st.bar_chart(pd.DataFrame({"n": counts}, index=HIST_LABELS))
+    # sort=False keeps the bars in pass-rate order; the default sorts the labels
+    # alphabetically, which scatters the fractions and puts "1 (out)" near the start.
+    st.bar_chart(pd.DataFrame({"n": counts}, index=HIST_LABELS), sort=False)
     in_band = sum(1 for i in items if i["in_band"])
     st.caption(
         "Learnable band is the open interval **0 < pass_rate < 1** "
