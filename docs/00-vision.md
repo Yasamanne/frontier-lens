@@ -16,7 +16,7 @@ Static eval sets go stale and do not say *where* a policy fails. Generated items
 2. One open model is the **policy** (k=8). Other open models are **references** (k=3). The generator family is disjoint from both.
 3. Train items are calibrated so the policy's pass rate sits in the **learnable band** `0 < pass_rate < 1`. Headroom is `pass@8 − pass@1`.
 4. **Eval holds out whole templates** (or disjoint parameter regions). The eval generator never calls the policy.
-5. Reward is binary exact match on the **last** `FINAL:` line (`exact_match_v1`). Hedges and multi-answers score 0.
+5. Reward is binary exact match on the **last** `FINAL:` line, matched case-insensitively (`exact_match_v2`). Hedges and multi-answers score 0.
 6. Humans **audit a random sample** of a generated batch (Wilson 95% CI on the defect rate) and review correct-but-suspicious policy traces.
 7. Exports: `rl_tasks.jsonl`, `eval_tasks.jsonl`, `sft_rejection_sampled.jsonl` for open trainers such as TRL GRPO.
 

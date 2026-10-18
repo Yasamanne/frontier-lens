@@ -49,7 +49,7 @@ For each side it returns `n`, the mean of those item accuracies, and a Wilson in
 
 `export.load_task_rows` writes the files a trainer would load.
 
-- Train rows (`rl_tasks.jsonl`) include seed and generated questions on `split='train'`. When in-band filtering is on, a row with a known pass rate outside `(0, 1)` is dropped. The row carries `policy_pass_rate`, `pass_at_k`, `ground_truth`, and `reward_fn='exact_match_v1'`.
+- Train rows (`rl_tasks.jsonl`) include seed and generated questions on `split='train'`. When in-band filtering is on, a row with a known pass rate outside `(0, 1)` is dropped. The row carries `policy_pass_rate`, `pass_at_k`, `ground_truth`, and `reward_fn='exact_match_v2'`.
 - Eval rows (`eval_tasks.jsonl`) use a schema without `policy_pass_rate` and `pass_at_k`.
 
 ### Data flow

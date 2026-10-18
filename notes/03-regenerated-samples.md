@@ -59,7 +59,7 @@ If the batch is accepted, `close_audit_batch` calls `promote` on the **unsampled
 - Writes a `reviews` row (`fair`, `novel`, `hard_for_right_reason`, label).
 - Defect labels set the candidate to `rejected` and stop.
 - Otherwise re-executes the code twice. A failed re-exec auto-rejects the candidate.
-- On success, inserts `questions` with `source='generated'`, `template='generated'`, `reward_fn='exact_match_v1'`, level 3 when `band='hard'` else level 2, and the candidate's `rl_split`. The key is the new stdout. The candidate becomes `approved`.
+- On success, inserts `questions` with `source='generated'`, `template='generated'`, `reward_fn='exact_match_v2'`, level 3 when `band='hard'` else level 2, and the candidate's `rl_split`. The key is the new stdout. The candidate becomes `approved`.
 
 Correct policy traces that still look hedged or self-contradictory go to `suspicious_samples` (`conflicting_finals`, `hedged_then_correct`). That queue is human review. It does not change the reward.
 

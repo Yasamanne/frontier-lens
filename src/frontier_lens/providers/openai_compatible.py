@@ -17,6 +17,8 @@ from frontier_lens.parallel import call_slot
 from frontier_lens.providers.base import Completion
 
 RETRY_ATTEMPTS = 4
+# The correction turn only has to produce one "FINAL: <answer>" line.
+CORRECTION_MAX_TOKENS = 512
 _RETRY_SLEEP_SEC = (1.0, 2.0, 4.0)
 
 
@@ -53,6 +55,7 @@ class OpenAICompatibleProvider:
         extra_body: dict | None = None,
         response_format: dict | None = None,
         temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[str, object]:
         """Raw chat call with retry on transient errors. Returns (text, usage)."""
         for attempt in range(RETRY_ATTEMPTS):
@@ -67,6 +70,8 @@ class OpenAICompatibleProvider:
                     kwargs["response_format"] = response_format
                 if temperature is not None:
                     kwargs["temperature"] = temperature
+                if max_tokens is not None:
+                    kwargs["max_tokens"] = max_tokens
                 with call_slot():
                     resp = self.client.chat.completions.create(**kwargs)
                 return resp.choices[0].message.content or "", resp.usage
@@ -105,6 +110,7 @@ class OpenAICompatibleProvider:
         json_mode: bool = False,
         extra_body: dict | None = None,
         temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> Completion:
         """Call the model once (with an optional FINAL: correction turn).
 
@@ -131,7 +137,10 @@ class OpenAICompatibleProvider:
         response_format = self._JSON_SCHEMA if json_mode else None
 
         text, usage = self._call(messages, model, extra_body=extra,
-                                  response_format=response_format, temperature=temperature)
+                                  response_format=response_format, temperature=temperature,
+                                  max_tokens=max_tokens)
+        out_tokens = getattr(usage, "completion_tokens", None) if usage else None
+        truncated = bool(max_tokens and out_tokens is not None and out_tokens >= max_tokens)
 
         # Strip residual <think>…</think> blocks that some models leak even when
         # thinking is disabled (DeepSeek, Qwen3).
@@ -151,9 +160,13 @@ class OpenAICompatibleProvider:
                 # JSON parsing failed — fall through to correction turn
                 pass
 
-        # If the response is missing the FINAL: line, send one correction turn.
+        # If the response has no usable FINAL: line, send one correction turn.
         # Only applies to policy/contest calls — skip for generator JSON output.
-        if not skip_correction and "FINAL:" not in text and "final:" not in text.lower():
+        # A reply that ran out of tokens is not retried: asking again with the whole
+        # transcript in context would be expensive and would not give it room to finish.
+        from frontier_lens.reward import last_final
+
+        if not skip_correction and not truncated and last_final(text) is None:
             messages = [
                 {"role": "user", "content": prompt},
                 {"role": "assistant", "content": text},
@@ -162,7 +175,8 @@ class OpenAICompatibleProvider:
             try:
                 correction_text, correction_usage = self._call(messages, model, extra_body=extra,
                                                                 response_format=response_format,
-                                                                temperature=temperature)
+                                                                temperature=temperature,
+                                                                max_tokens=CORRECTION_MAX_TOKENS)
                 correction_text = _re.sub(
                     r"<think>.*?</think>", "", correction_text, flags=_re.DOTALL
                 ).strip()
@@ -190,4 +204,5 @@ class OpenAICompatibleProvider:
             latency_ms=ms,
             tokens_in=getattr(usage, "prompt_tokens", None) if usage else None,
             tokens_out=getattr(usage, "completion_tokens", None) if usage else None,
+            truncated=truncated,
         )

@@ -35,7 +35,7 @@ For counting and units, the stem is prose, so the verifier stays hidden. For Pyt
 
 ### Reward
 
-`reward.grade` implements `exact_match_v1`:
+`reward.grade` implements `exact_match_v2`:
 
 1. Take the **last** `FINAL:` line. Earlier lines do not count.
 2. No `FINAL:` line → reward 0, `unparsable=1`.
@@ -82,3 +82,9 @@ flowchart TD
   attempts --> cells[train heatmap by topic and band]
   cells --> weak[weakest_cell]
 ```
+
+## Reward version and output cap
+
+- `exact_match_v2` replaces `v1`. The only change is that the `FINAL:` marker is matched case-insensitively, and a line that repeats the marker (a generation loop) is not read as an answer. Attempts graded before this change were graded with v1; they are not re-graded.
+- A model can have an output cap in `models.yaml` (`max_tokens`). The policy's is 16,000 tokens. Contest sampling passes it on, a reply that uses the whole budget is not given a correction turn, and the correction turn itself is limited to 512 tokens.
+- The correction turn now runs whenever the reply has no usable `FINAL:` line (before: whenever no `final:` text appeared anywhere).

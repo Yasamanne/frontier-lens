@@ -12,6 +12,11 @@
   model: google/gemma-4-26b-a4b-it
   quant: host
   thinking: false
+  # Output cap per call. Policy samples that run past ~16k tokens are almost all
+  # runaway loops or cut-offs (22 of 24 unparsable samples vs 29 of 407 correct ones
+  # used over 8k tokens); the provider default allows 32k+ and one run hit 131k.
+  # Leave unset for models that legitimately reason at length.
+  max_tokens: 16000
   license: Apache-2.0 / Gemma Terms of Use (check model card)
 - id: gemma4-31b
   role: reference

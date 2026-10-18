@@ -4,7 +4,7 @@
 
 Frontier Lens is an RL data engine for one open-weight **policy** model. It builds execution-verified tasks, scores the policy against other open models, then writes new tasks aimed at the policy's weak spots. Held-out eval tasks are built without looking at the policy.
 
-The product is **RL-ready** JSONL: a prompt, a sandbox gold answer, and a pinned reward id (`exact_match_v1`). A training run that improves the policy was not done. These notes describe the pipeline that exists in the code, in the order the commits built it.
+The product is **RL-ready** JSONL: a prompt, a sandbox gold answer, and a pinned reward id (`exact_match_v2`). A training run that improves the policy was not done. These notes describe the pipeline that exists in the code, in the order the commits built it.
 
 Roles in `models.yaml`:
 

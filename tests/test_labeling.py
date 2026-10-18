@@ -122,7 +122,9 @@ def test_provider_merges_extra_body_with_thinking_flag(monkeypatch):
     provider = OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
     sent: dict = {}
 
-    def fake_call(messages, model, extra_body=None, response_format=None, temperature=None):
+    def fake_call(
+        messages, model, extra_body=None, response_format=None, temperature=None, max_tokens=None
+    ):
         sent["extra"] = extra_body
         return "ok", None
 

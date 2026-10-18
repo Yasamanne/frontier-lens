@@ -262,6 +262,7 @@ def run_contest(
                             prompt, spec.model,
                             thinking=bool(spec.thinking),
                             json_mode=bool(getattr(spec, "json_mode", False)),
+                            max_tokens=spec.max_tokens,
                         )
                     except Exception as exc:
                         provider_note = f"{type(exc).__name__}: {exc}"
@@ -511,7 +512,8 @@ def run_verifier(
         q, _sample = job
         try:
             completion = provider.complete(
-                contest_prompt(q["stem"]), spec.model, thinking=bool(spec.thinking)
+                contest_prompt(q["stem"]), spec.model, thinking=bool(spec.thinking),
+                max_tokens=spec.max_tokens,
             )
         except Exception as exc:
             completion = Completion(

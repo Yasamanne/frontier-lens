@@ -8,7 +8,7 @@ contest.py (policy k=8, reference k=3) → openai_compatible | fixture → attem
 stats.py → pass_rate / pass@k / learnable band / heatmap
 generate.py / agent (train: estimate_pass_rate; eval: no policy)
   → sandbox → candidates → audit sample → questions
-reward.py exact_match_v1 → scoring
+reward.py exact_match_v2 → scoring
 export.py → rl_tasks.jsonl / eval_tasks.jsonl / sft_rejection_sampled.jsonl
 ```
 
@@ -29,7 +29,7 @@ Local quant = Ollama GGUF Q4_K_M. Not bitsandbytes. Not vLLM on this laptop.
 
 ## Reward
 
-`reward.grade` is a pure function. Id `exact_match_v1`: last `FINAL:` line only; empty / hedges (`or`, `/`, `either`) / multi-candidate answers → 0; else normalized exact match.
+`reward.grade` is a pure function. Id `exact_match_v2`: last `FINAL:` line only (matched case-insensitively, so `Final: 42` counts; a line that repeats the marker is a loop, not an answer); empty / hedges (`or`, `/`, `either`) / multi-candidate answers → 0; else normalized exact match.
 
 ## Streamlit
 
