@@ -22,6 +22,7 @@ from sqlalchemy import text
 
 from frontier_lens.db import get_engine
 from frontier_lens.parse import normalize
+from frontier_lens.scope import NOT_BROKEN, run_clause
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -117,17 +118,18 @@ def failure_modes(
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                """
+                f"""
                 SELECT q.id as qid, q.stem, q.key, q.numeric,
                        a.sample_index, a.raw_output, a.parsed_answer,
                        a.is_correct, a.unparsable
                 FROM attempts a
                 JOIN questions q ON q.id = a.question_id
-                WHERE a.run_id  = :r
+                WHERE {run_clause("r")}
                   AND a.model_id = :m
                   AND q.topic   = :t
                   AND q.band    = :b
                   AND q.split   = :split
+                  AND {NOT_BROKEN}
                 """
             ),
             {"r": run_id, "m": model_id, "t": topic, "b": band, "split": split},
@@ -190,7 +192,9 @@ def failure_modes(
         "consistent_wrong_frac": acc["consistent_wrong"] / n_failing,
         "high_variance_frac": acc["high_variance"] / n_failing,
     }
-    dominant = max(aggregate, key=aggregate.get)
+    # All-zero modes (e.g. two distinct wrong answers) show no pattern; max() would
+    # otherwise return the first key and mislabel the cell "unparsable".
+    dominant = max(aggregate, key=aggregate.get) if any(aggregate.values()) else "none"
 
     return {
         "n_failing_questions": n_failing,
@@ -316,11 +320,12 @@ def failure_modes_all_cells(run_id: str, model_id: str, split: str = "train") ->
     with engine.connect() as conn:
         cells = conn.execute(
             text(
-                """
+                f"""
                 SELECT DISTINCT q.topic, q.band
                 FROM attempts a
                 JOIN questions q ON q.id = a.question_id
-                WHERE a.run_id = :r AND a.model_id = :m AND q.split = :split
+                WHERE {run_clause("r")} AND a.model_id = :m AND q.split = :split
+                  AND {NOT_BROKEN}
                 """
             ),
             {"r": run_id, "m": model_id, "split": split},

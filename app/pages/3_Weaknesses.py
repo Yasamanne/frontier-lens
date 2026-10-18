@@ -39,15 +39,15 @@ from sqlalchemy import text
 from frontier_lens.db import get_engine
 from frontier_lens.failure_analysis import failure_modes_all_cells
 from frontier_lens.heatmap import heatmap
-from frontier_lens.metrics import policy_item_rates
+from frontier_lens.metrics import HIST_LABELS, histogram_counts, policy_item_rates
 from frontier_lens.registry import policy_spec
+from frontier_lens.scope import POOLED, run_clause
 
 st.title("Weaknesses")
 engine = get_engine()
 
 with engine.connect() as conn:
-    runs   = conn.execute(text("SELECT id, created_at, status FROM eval_runs ORDER BY created_at DESC")).all()
-    models = conn.execute(text("SELECT DISTINCT model_id FROM attempts")).scalars().all()
+    runs = conn.execute(text("SELECT id, created_at, status FROM eval_runs ORDER BY created_at DESC")).all()
 
 if not runs:
     st.warning("No eval runs yet.")
@@ -65,6 +65,22 @@ run_id = st.selectbox(
         (lbl for lbl, r in zip(_run_labels, runs) if r[0] == rid), rid
     ),
 )
+if st.checkbox(
+    "Pool all completed runs",
+    help="Combine the samples of every completed run, e.g. after \"Score only what's missing\" "
+         "runs that each hold only part of the questions. Samples add up per question.",
+):
+    run_id = POOLED
+
+# Only models that have attempts in the chosen scope.
+with engine.connect() as conn:
+    models = conn.execute(
+        text(f"SELECT DISTINCT a.model_id FROM attempts a WHERE {run_clause('r')} ORDER BY 1"),
+        {"r": run_id},
+    ).scalars().all()
+if not models:
+    st.info("No attempts in this run yet.")
+    st.stop()
 policy_id = policy_spec().id
 default_idx = list(models).index(policy_id) if policy_id in list(models) else 0
 model_id = st.selectbox("Model", list(models), index=default_idx)
@@ -73,23 +89,31 @@ model_id = st.selectbox("Model", list(models), index=default_idx)
 st.subheader("Policy pass-rate histogram")
 items = policy_item_rates(run_id, model_id, split="train")
 if items:
-    labels = ["0 (out)", "0–⅛", "⅛–¼", "¼–⅜", "⅜–½", "½–⅝", "⅝–¾", "¾–⅞", "1 (out)"]
-    counts = [0] * 9
-    for it in items:
-        r = it["pass_rate"]
-        if r <= 0:
-            counts[0] += 1
-        elif r >= 1:
-            counts[8] += 1
-        else:
-            counts[max(1, min(7, int(r * 8)))] += 1
-    st.bar_chart(pd.DataFrame({"n": counts}, index=labels))
+    counts = histogram_counts([it["pass_rate"] for it in items])
+    st.bar_chart(pd.DataFrame({"n": counts}, index=HIST_LABELS))
     in_band = sum(1 for i in items if i["in_band"])
     st.caption(
         "Learnable band is the open interval **0 < pass_rate < 1** "
         f"(interior bars). {in_band}/{len(items)} train items sit in the band. "
-        "Bars labeled 0 and 1 are outside it."
+        "Bars labeled 0 and 1 are outside it. Questions an SME marked broken are left out."
     )
+    with engine.connect() as conn:
+        n_pending = conn.execute(
+            text(
+                f"""
+                SELECT COUNT(DISTINCT q.id) FROM attempts a
+                JOIN questions q ON q.id = a.question_id
+                WHERE {run_clause('r')} AND a.model_id = :m AND q.split = 'train'
+                  AND COALESCE(q.sme_flagged, 0) = 1
+                """
+            ),
+            {"r": run_id, "m": model_id},
+        ).scalar() or 0
+    if n_pending:
+        st.caption(
+            f"{n_pending} question(s) awaiting SME review are included "
+            "(their keys are not confirmed yet)."
+        )
     st.caption("→ Go to **Generate** to run dead-zone rescue and RL-suitable augmentation.")
 else:
     st.info("No train-split attempts for this model yet.")
