@@ -128,6 +128,7 @@ def _apply(batch: list[dict], labels: dict[int, tuple[str | None, str | None]]) 
 
 def default_complete() -> Callable[[str], str]:
     """Prompt -> text using the configured judge model."""
+    from frontier_lens.config import JUDGE_TEMPERATURE
     from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
     from frontier_lens.registry import judge_spec
 
@@ -137,8 +138,13 @@ def default_complete() -> Callable[[str], str]:
     provider = OpenAICompatibleProvider(spec.base_url or "", spec.api_key_env)
 
     def complete(prompt: str) -> str:
+        # Labelling needs no reasoning. The generic enable_thinking flag is ignored by some
+        # models on OpenRouter (3,500 hidden tokens, ~30-55 s per call); its own switch
+        # turns reasoning off and cuts a call to about 2 s.
         return provider.complete(
-            prompt, spec.model, thinking=bool(spec.thinking), skip_correction=True
+            prompt, spec.model, thinking=False, skip_correction=True,
+            extra_body={"reasoning": {"enabled": False}},
+            temperature=JUDGE_TEMPERATURE,
         ).text
 
     return complete

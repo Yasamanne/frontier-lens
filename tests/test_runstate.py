@@ -277,11 +277,15 @@ def test_verifier_uses_the_same_judge_and_is_not_sft_data(tmp_db, monkeypatch):
     from frontier_lens.providers.base import Completion
     from frontier_lens.registry import sync_models
 
+    judge_kwargs: list[dict] = []
+
     class FakeProvider:
         def __init__(self, *a, **k):
             pass
 
         def complete(self, prompt, model, **kw):
+            if "answer equivalence checker" in prompt:
+                judge_kwargs.append(kw)
             # Judge prompts ask for YES/NO; contest prompts get a non-exact answer.
             text = "YES" if "answer equivalence checker" in prompt else "FINAL: B"
             return Completion(text=text, latency_ms=1, tokens_in=1, tokens_out=1)
@@ -301,6 +305,7 @@ def test_verifier_uses_the_same_judge_and_is_not_sft_data(tmp_db, monkeypatch):
         ver = conn.execute(
             text("SELECT is_correct FROM attempts WHERE model_id='gemma4-31b'")
         ).scalar()
+    assert judge_kwargs and all(kw["temperature"] == 0.0 for kw in judge_kwargs)
     assert ver == 1  # exact match fails ("B" vs "A"); the judge, as in the primary pass, accepts
     assert load_sft_rows("r") == []  # verifier samples are not SFT data
     # The primary still failed, so the question stays pass@k = 0 and can get hints.

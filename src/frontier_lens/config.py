@@ -30,6 +30,8 @@ REFERENCE_K = int(os.getenv("REFERENCE_K", "3"))
 MAX_CONCURRENCY = max(1, int(os.getenv("MAX_CONCURRENCY", "16")))
 AUDIT_SAMPLE_N = int(os.getenv("AUDIT_SAMPLE_N", "50"))
 AUDIT_MAX_DEFECT_HI = float(os.getenv("AUDIT_MAX_DEFECT_HI", "0.10"))
+# The judge only decides equivalence / labels, so it must be repeatable.
+JUDGE_TEMPERATURE = 0.0
 LEARNABLE_LO = 0.0
 LEARNABLE_HI = 1.0
 REQUIRE_LIVE_KNOBS = os.getenv("FRONTIER_LENS_REQUIRE_LIVE_KNOBS", "").lower() in {
