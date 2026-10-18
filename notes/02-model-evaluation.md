@@ -55,7 +55,7 @@ From `stats.py`, for `c` correct out of `n` samples:
 - `headroom = pass@k - pass@1`
 - learnable band: `0 < pass_rate < 1` (0 and 1 are outside)
 
-`metrics.policy_item_rates` computes these for one run and model, defaulting to the train split. The Weaknesses page shows the pass-rate histogram. The Results page shows band share and mean headroom.
+`metrics.policy_item_rates` computes these for one run and model, defaulting to the train split. The Gap Analysis page shows the pass-rate histogram. The Results page shows band share and mean headroom.
 
 ### Weak cells
 

@@ -161,7 +161,7 @@ st.markdown("""
   <div class="nav-links">
     <a href="/Seed"            target="_self" class="nav-link">Seed</a>
     <a href="/Evaluate"        target="_self" class="nav-link">Evaluate</a>
-    <a href="/Weaknesses"      target="_self" class="nav-link">Weaknesses</a>
+    <a href="/Gap_Analysis"    target="_self" class="nav-link">Gap Analysis</a>
     <a href="/Generate_Review" target="_self" class="nav-link">Generate</a>
     <a href="/Dataset"         target="_self" class="nav-link">Dataset</a>
     <a href="/Headroom"        target="_self" class="nav-link">Headroom</a>
@@ -259,7 +259,7 @@ cols = st.columns(6)
 steps = [
     ("1", "🌱", "Seed",      "Generate procedural questions or upload your own dataset.", "/Seed"),
     ("2", "⚡", "Evaluate",  "Run the policy k=8 times on every question. Record every trace.", "/Evaluate"),
-    ("3", "🔍", "Weaknesses","Pass-rate histogram, failure-mode heatmap, and dominant error type.", "/Weaknesses"),
+    ("3", "🔍", "Gap Analysis","Pass-rate histogram, failure-mode heatmap, and dominant error type.", "/Gap_Analysis"),
     ("4", "✨", "Generate",  "LLM-generates new items targeting weak cells. SME review queue.", "/Generate_Review"),
     ("5", "📊", "Dataset",   "Band share, audit CI, and rl_tasks.jsonl export for TRL/GRPO.", "/Dataset"),
     ("6", "📈", "Headroom",  "Before vs. after: how much the pipeline grew the RL-trainable pool.", "/Headroom"),

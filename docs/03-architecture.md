@@ -33,4 +33,4 @@ Local quant = Ollama GGUF Q4_K_M. Not bitsandbytes. Not vLLM on this laptop.
 
 ## Streamlit
 
-Four pages: Contest, Weaknesses (pass-rate histogram + heatmap), Generate + Review (audit + suspicious queue), Results (band share, headroom, audit CI, one-shot vs agent). Sidebar role + health dots. Evaluate launches `contest.py` as a subprocess. Public viewers use fixture replay.
+Four pages: Contest, Gap Analysis (pass-rate histogram + heatmap), Generate + Review (audit + suspicious queue), Results (band share, headroom, audit CI, one-shot vs agent). Sidebar role + health dots. Evaluate launches `contest.py` as a subprocess. Public viewers use fixture replay.
