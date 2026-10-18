@@ -26,7 +26,7 @@ Research engineers and data teams building RL or fine-tuning data for a specific
 Seed (procedural templates → sandbox keys)  ──►  Evaluate (policy k=8, references k=3)
         ▲                                                │
         │                                                ▼
-   Upload CSV/JSONL                        Weaknesses (pass-rate histogram, topic×band
+   Upload CSV/JSONL                        Gap Analysis (pass-rate histogram, topic×band
                                            heatmap with Wilson CIs, failure modes)
                                                          │
                                                          ▼
@@ -41,7 +41,7 @@ Seed (procedural templates → sandbox keys)  ──►  Evaluate (policy k=8, r
 |---|---|
 | **Seed** | Builds the procedural bank (7 topics × 26 = 182 items: L1 harness, L2 standard, L3 hard). Calibrates the L2/L3 difficulty knobs against the policy. Uploads CSV/JSONL question sets, with exact and near-duplicate detection. |
 | **Evaluate** | Scores the policy and reference models k times per item. Optional LLM answer-equivalence judge, and a verifier model on items every model failed. Runs in the background with a live progress panel, Stop and Resume. Downloads CSV and logs. |
-| **Weaknesses** | Histogram of per-item policy pass rates; topic × band heatmap (a cell is "weak" only if its Wilson upper bound is below the model's mean); failure modes (unparsable, off-by-one, consistent-wrong, high-variance, hedge). |
+| **Gap Analysis** | Histogram of per-item policy pass rates; topic × band heatmap (a cell is "weak" only if its Wilson upper bound is below the model's mean); failure modes (unparsable, off-by-one, consistent-wrong, high-variance, hedge). |
 | **Generate** | **Rescue** of pass@k=0 items with progressive hints (L1 framing → L2 technique → L3 common mistake), recalibrating after each. **Augmentation** of in-band items in three modes. The **SME queue** for approve/reject with reasons, notes and edits. |
 | **Dataset** | RL-ready pool, SFT pool (unrescuable items with their failed responses), and an SME review tab. |
 | **Headroom** | Baseline RL-suitable items vs approved new items: yield per generation mode, rescue rate, pass-rate distribution. |
@@ -146,7 +146,7 @@ The generator and judge share a family with one reference. This is allowed with 
 - **Review every item → sampled audit.** The Wilson upper bound decides whether a batch passes.
 - **Item-level holdout → template-level holdout.** Item-level holdout leaked templates into eval.
 - **Hand-written Python "gotchas" → procedural generators.** Difficulty now comes from step length and state, not tricks (`docs/known-gotchas.md`). The topics grew from 4 to 7.
-- **Contest/Results pages → today's six pages.** The current pages are Seed, Evaluate, Weaknesses, Generate, Dataset and Headroom.
+- **Contest/Results pages → today's six pages.** The current pages are Seed, Evaluate, Gap Analysis, Generate, Dataset and Headroom.
 - **In-page runs → resumable background jobs.** A page refresh used to kill an evaluation.
 - **Stems of rejected variants → structured SME feedback.** Reasons, notes and rewrites now feed the generator and the AI reviewer.
 
