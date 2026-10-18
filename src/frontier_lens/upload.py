@@ -210,6 +210,9 @@ def _clean_row(raw: dict, row_num: int) -> dict:
         "numeric": numeric,
         "split": split,
         "solution_steps": solution_steps,
+        # Missing fields can be filled by labeling.label_rows.
+        "topic_missing": not str(raw.get("topic") or "").strip(),
+        "level_missing": all(raw.get(c) in (None, "") for c in ("difficulty", "level")),
     }
 
 
@@ -379,6 +382,7 @@ def import_rows(rows: list[dict], replace: bool = False, filename: str | None = 
                         "template": f"uploaded_{row['topic']}",
                         "params": json.dumps({
                             "solution_steps": row.get("solution_steps", ""),
+                            **({"label_source": row["labels"]} if row.get("labels") else {}),
                         }),
                         "stem": row["stem"],
                         "code": "",
@@ -393,6 +397,22 @@ def import_rows(rows: list[dict], replace: bool = False, filename: str | None = 
             except Exception:
                 pass
     return inserted
+
+
+def uploaded_topics() -> list[str]:
+    """Distinct topics already used by uploaded questions (labels to reuse)."""
+    with get_engine().connect() as conn:
+        return list(
+            conn.execute(
+                text("SELECT DISTINCT topic FROM questions "
+                "WHERE source='uploaded' AND topic != 'custom' ORDER BY 1")
+            ).scalars()
+        )
+
+
+def uploaded_ids() -> set[str]:
+    with get_engine().connect() as conn:
+        return set(conn.execute(text("SELECT id FROM questions WHERE source='uploaded'")).scalars())
 
 
 def delete_uploaded() -> int:
