@@ -195,3 +195,18 @@ def test_heartbeat_stops_quietly_after_own_finish(tmp_db):
         runstate.finish("own", "complete")
         time.sleep(0.1)
     assert runstate.load_run("own")["status"] == "complete"
+
+
+def test_broken_questions_are_not_sampled_or_reflagged(tmp_db):
+    from frontier_lens.contest import select_questions
+
+    for qid in ("ok", "broken"):
+        _add_question(tmp_db, qid, "4")
+    with tmp_db.begin() as conn:
+        conn.execute(text("UPDATE questions SET sme_flagged=2 WHERE id='broken'"))
+    assert [q["id"] for q in select_questions()] == ["ok"]
+
+    eval_job.flag_for_sme(["ok", "broken"])
+    with tmp_db.connect() as conn:
+        flags = dict(conn.execute(text("SELECT id, sme_flagged FROM questions")).all())
+    assert flags == {"ok": 1, "broken": 2}

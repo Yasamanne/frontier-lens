@@ -94,7 +94,10 @@ def flag_for_sme(question_ids: list[str]) -> None:
     with get_engine().begin() as conn:
         for qid in question_ids:
             conn.execute(
-                text("UPDATE questions SET sme_flagged=1, sme_source='evaluate' WHERE id=:id"),
+                text(
+                    "UPDATE questions SET sme_flagged=1, sme_source='evaluate' "
+                    "WHERE id=:id AND COALESCE(sme_flagged, 0) != 2"  # keep SME 'broken' verdicts
+                ),
                 {"id": qid},
             )
 

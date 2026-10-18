@@ -196,7 +196,7 @@ def _resolve_question_ids(
     """Return the ordered list of question IDs that would be scored."""
     with engine.connect() as conn:
         if uploaded_only:
-            sql = "SELECT id FROM questions WHERE source='uploaded'"
+            sql = "SELECT id FROM questions WHERE source='uploaded' AND COALESCE(sme_flagged, 0) != 2"
             params: dict = {}
             if selected_filename:
                 sql += " AND COALESCE(upload_filename,'(unnamed)')=:fname"
@@ -206,7 +206,8 @@ def _resolve_question_ids(
         else:
             sql = (
                 "SELECT id FROM questions "
-                "WHERE source IN ('seed','generated','uploaded')"
+                "WHERE source IN ('seed','generated','uploaded') "
+                "AND COALESCE(sme_flagged, 0) != 2"
             )
             if train_only:
                 sql += " AND split='train'"

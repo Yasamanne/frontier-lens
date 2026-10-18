@@ -41,6 +41,7 @@ def select_questions(
                 SELECT id, stem, key, numeric, level, topic, band, split, template,
                        params_json, source
                 FROM questions WHERE source IN ('seed','generated','uploaded')
+                  AND COALESCE(sme_flagged, 0) != 2
                 """
             )
         ).mappings().all()
