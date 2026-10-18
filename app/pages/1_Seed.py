@@ -449,12 +449,62 @@ stem,key,topic,difficulty,solution_steps
                 help="If unchecked, already-existing rows are silently skipped.",
             )
 
+            # ── Optional LLM labels for missing topic / difficulty ────────
+            from frontier_lens import labeling
+            from frontier_lens.config import OPENROUTER_API_KEY
+            from frontier_lens.registry import judge_spec
+            from frontier_lens.upload import uploaded_ids, uploaded_topics
+
+            _in_db = set() if replace else uploaded_ids()
+            _label_rows = [r for r in _seed_rows if r["id"] not in _in_db and labeling.needs_label(r)]
+            _judge = judge_spec()
+            use_labels = False
+            if _label_rows:
+                n_no_topic = sum(1 for r in _label_rows if r.get("topic_missing"))
+                n_no_level = sum(1 for r in _label_rows if r.get("level_missing"))
+                can_label = bool(_judge) and bool(OPENROUTER_API_KEY)
+                use_labels = st.checkbox(
+                    f"Label missing topic / difficulty with the LLM "
+                    f"({n_no_topic} without topic, {n_no_level} without difficulty)",
+                    value=can_label,
+                    disabled=not can_label,
+                    help=(
+                        f"Uses the judge model ({_judge.id if _judge else 'none configured'}), about "
+                        f"{labeling.n_calls(_label_rows)} call(s) of {labeling.BATCH_SIZE} questions. "
+                        "Only missing fields are filled. Topics reuse existing ones; difficulty is "
+                        "standard or hard. Rows it cannot label keep topic 'custom' and difficulty medium."
+                    ),
+                )
+                if not can_label:
+                    st.caption("LLM labelling needs a judge model in `models.yaml` and `OPENROUTER_API_KEY`.")
+
             if st.button("⬆ Import into database", type="primary", disabled=(role != "Organizer")):
+                label_note = ""
+                if use_labels:
+                    known = sorted(
+                        set(uploaded_topics())
+                        | {r["topic"] for r in _seed_rows if not r.get("topic_missing")}
+                    )
+                    bar = st.progress(0.0, text="Labelling topics and difficulty…")
+                    report = labeling.label_rows(
+                        _label_rows,
+                        known_topics=known,
+                        progress=lambda d, t: bar.progress(d / t, text=f"Labelling… {d}/{t} calls"),
+                    )
+                    bar.empty()
+                    label_note = (
+                        f" LLM labels filled {report.rows_labeled} of {report.rows_needing_labels} "
+                        f"row(s)"
+                        + (f"; {report.failed_batches} call(s) failed, those rows kept defaults"
+                           if report.failed_batches else "")
+                        + (f"; new topics: {', '.join(report.new_topics)}" if report.new_topics else "")
+                        + "."
+                    )
                 n = import_rows(_seed_rows, replace=replace, filename=uploaded_file.name)
                 # Stash the message: st.rerun() would otherwise wipe it before it renders
                 st.session_state["upload_import_msg"] = (
                     f"Imported **{n}** new question(s) from `{uploaded_file.name}`. "
-                    "They appear in the Evaluate tab immediately."
+                    "They appear in the Evaluate tab immediately." + label_note
                 )
                 st.rerun()
 
