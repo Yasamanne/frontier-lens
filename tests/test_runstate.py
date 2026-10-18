@@ -306,3 +306,27 @@ def test_verifier_uses_the_same_judge_and_is_not_sft_data(tmp_db, monkeypatch):
     # The primary still failed, so the question stays pass@k = 0 and can get hints.
     assert [q["id"] for q in zero_pass_questions("r", POLICY, include_uncoded=True)] == ["q1"]
     assert json.loads(runstate.load_run("r")["config_json"])["verifier_model"] == "gemma4-31b"
+
+
+def test_only_one_run_can_start_at_a_time(tmp_db, monkeypatch):
+    import pytest
+
+    cfg = {"models": [POLICY], "k": 1, "question_ids": ["q"], "notes": "a"}
+    monkeypatch.setattr(runstate, "spawn_detached", lambda *a, **k: 4242)
+    first = eval_job.start(cfg)
+    assert runstate.load_run(first)["pid"] == 4242
+
+    # A second start is refused and leaves no live run behind.
+    with pytest.raises(eval_job.RunInProgress):
+        eval_job.start({**cfg, "notes": "b"})
+    assert [r["id"] for r in runstate.active_runs()] == [first]
+
+    # An interrupted older run cannot be resumed while another is alive.
+    old = "oldrun"
+    runstate.insert_run(old, ["q"], 1, None, cfg, status="interrupted")
+    with pytest.raises(eval_job.RunInProgress):
+        eval_job.launch(old)
+
+    # Once the first run finishes, the next one may start.
+    runstate.finish(first, "complete")
+    assert eval_job.launch(old) == 4242

@@ -389,6 +389,18 @@ if role == "Viewer":
 
 can_run = bool(chosen) and role == "Organizer" and bool(OPENROUTER_API_KEY) and not _active
 
+if _active:
+    # One run at a time (single SQLite writer, shared API rate limits), whatever the dataset.
+    _blk = _active[0]
+    _bp = runstate.progress(_blk["id"])
+    _bplanned = _bp["planned_primary"]
+    st.info(
+        f"🔒 Run `{_blk['id']}` (batch: {_blk['notes'] or 'live'}) is in progress"
+        + (f", {_bp['primary']['done']}/{_bplanned} samples" if _bplanned else "")
+        + ". Only one evaluation runs at a time, so Evaluate unlocks when it finishes"
+        + (" or you stop it above." if role == "Organizer" else ".")
+    )
+
 # ── Overlap detection state machine ──────────────────────────────────────
 # State: None → detect → waiting_choice → running
 _eval_state = st.session_state.get("eval_state", None)
@@ -525,15 +537,20 @@ if st.session_state.get("eval_state") == "running":
         st.stop()
 
     # Primary contest, verifier, and SME flagging all run in the background job.
-    run_id = eval_job.start(
-        run_config(
-            chosen, k, qids_to_run,
-            notes=source_label,
-            reuse_prev_runs=reuse_prev,
-            judge_model_id=judge_id,
-            verifier_model=verifier_id,
+    try:
+        run_id = eval_job.start(
+            run_config(
+                chosen, k, qids_to_run,
+                notes=source_label,
+                reuse_prev_runs=reuse_prev,
+                judge_model_id=judge_id,
+                verifier_model=verifier_id,
+            )
         )
-    )
+    except eval_job.RunInProgress:
+        # Someone else (another tab, the CLI) started a run after this page rendered.
+        st.warning("Another evaluation run just started. Wait for it to finish, then try again.")
+        st.stop()
     st.session_state.pop("eval_last_result", None)
     st.session_state["eval_watch_run"] = run_id
     st.session_state["last_run_id"] = run_id
@@ -596,7 +613,11 @@ else:
                 disabled=role != "Organizer" or bool(_active) or (needs_key and not OPENROUTER_API_KEY),
                 help="Organizer only; disabled while another run is in progress.",
             ):
-                eval_job.launch(sel_id)
+                try:
+                    eval_job.launch(sel_id)
+                except eval_job.RunInProgress:
+                    st.warning("Another evaluation run just started. Resume once it finishes.")
+                    st.stop()
                 st.session_state.pop("eval_last_result", None)
                 st.session_state["eval_watch_run"] = sel_id
                 st.session_state["last_run_id"] = sel_id

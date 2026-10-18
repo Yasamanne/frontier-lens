@@ -159,7 +159,7 @@ def run_contest(
     resumed = existing is not None and existing.get("planned_primary") is not None
     if existing is None:
         run_id = run_id or uuid.uuid4().hex[:12]
-        insert_run(
+        if not insert_run(
             run_id,
             [q["id"] for q in qrows],
             max(POLICY_K, REFERENCE_K) if k is None else k,
@@ -173,7 +173,9 @@ def run_contest(
                 judge_model_id=judge_model_id,
             ),
             status="queued",
-        )
+            exclusive=True,
+        ):
+            raise RuntimeError("another evaluation run is in progress")
     if not claim(run_id):
         raise RuntimeError(f"run {run_id} was stopped before it started")
     set_fields(run_id, phase="primary")
