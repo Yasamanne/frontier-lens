@@ -20,7 +20,7 @@ def test_hedge_and_multi_answer_score_zero():
 
 
 def test_exact_match_id_stable():
-    assert REWARD_FN == "exact_match_v1"
+    assert REWARD_FN == "exact_match_v2"
 
 
 def test_guessable_small_int_range():

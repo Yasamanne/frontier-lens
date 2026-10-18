@@ -22,6 +22,7 @@ class ModelSpec:
     license: str
     api_key_env: str | None
     json_mode: bool = False   # request structured JSON output to enforce format
+    max_tokens: int | None = None   # output cap per call; None = the provider default
 
 
 def load_yaml() -> list[ModelSpec]:
@@ -46,6 +47,7 @@ def load_yaml() -> list[ModelSpec]:
             license=row["license"],
             api_key_env=row.get("api_key_env"),
             json_mode=bool(row.get("json_mode", False)),
+            max_tokens=int(row["max_tokens"]) if row.get("max_tokens") else None,
         )
         if spec.role not in allowed:
             raise ValueError(f"bad role {spec.role}")

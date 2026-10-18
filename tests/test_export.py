@@ -26,7 +26,7 @@ def test_train_row_schema():
         split="train",
     )
     dumped = json.loads(row.model_dump_json())
-    assert dumped["reward_fn"] == "exact_match_v1"
+    assert dumped["reward_fn"] == "exact_match_v2"
     assert dumped["split"] == "train"
 
 

@@ -6,6 +6,11 @@ Grading pipeline:
      Returns 1 if the judge says the answers are semantically equivalent.
 
 Id is stable for RL exports.
+
+exact_match_v2 (current) differs from v1 only in how the answer line is found:
+``FINAL:`` is matched case-insensitively, so ``Final: 42`` counts. A line that repeats
+the marker (``Final: 6  Final: 6 ...``, a generation loop) is not an answer.
+Everything else (hedges score 0, normalisation, optional judge) is unchanged.
 """
 
 from __future__ import annotations
@@ -13,9 +18,13 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from frontier_lens.parse import FINAL_RE, normalize
+from frontier_lens.parse import normalize
 
-REWARD_FN = "exact_match_v1"
+REWARD_FN = "exact_match_v2"
+
+# Case-insensitive, unlike parse.FINAL_RE (the v1 pattern).
+FINAL_RE_V2 = re.compile(r"final:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+_MARKER_RE = re.compile(r"final\s*:", re.IGNORECASE)
 
 _JUDGE_PROMPT = """\
 You are a strict answer equivalence checker.
@@ -40,10 +49,13 @@ HEDGE_RE = re.compile(r"\b(or|either)\b|/", re.IGNORECASE)
 def last_final(raw: str) -> str | None:
     if not raw:
         return None
-    matches = FINAL_RE.findall(raw)
+    matches = FINAL_RE_V2.findall(raw)
     if not matches:
         return None
-    return matches[-1].strip()
+    answer = matches[-1].strip()
+    if _MARKER_RE.search(answer):  # marker repeated on one line: a loop, not an answer
+        return None
+    return answer
 
 
 def is_degenerate(answer: str) -> bool:

@@ -1,6 +1,6 @@
 """Export JSONL for open RL trainers (e.g. TRL GRPO) and SFT rejection sampling.
 
-The files are RL-ready: each train row names reward_fn=exact_match_v1, a sandbox
+The files are RL-ready: each train row names reward_fn=exact_match_v2, a sandbox
 key, and the policy pass-rate used to keep the item in the learnable band.
 They are not RL-proven until a training run is measured on eval_tasks.jsonl.
 """
@@ -30,7 +30,7 @@ class TaskRow(BaseModel):
     id: str
     prompt: str
     ground_truth: str
-    reward_fn: Literal["exact_match_v1"] = REWARD_FN
+    reward_fn: Literal["exact_match_v2"] = REWARD_FN
     template: str
     level: int
     params: dict

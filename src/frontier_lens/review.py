@@ -9,8 +9,8 @@ from sqlalchemy import text
 from frontier_lens.config import AUDIT_MAX_DEFECT_HI, AUDIT_SAMPLE_N, SME_NAME
 from frontier_lens.db import get_engine
 from frontier_lens.ids import item_id
-from frontier_lens.parse import FINAL_RE, normalize
-from frontier_lens.reward import HEDGE_RE, REWARD_FN, last_final
+from frontier_lens.parse import normalize
+from frontier_lens.reward import FINAL_RE_V2, HEDGE_RE, REWARD_FN, last_final
 from frontier_lens.sandbox import execute
 from frontier_lens.stats import wilson_interval
 
@@ -306,7 +306,7 @@ def promote(
 
 def suspicious_reason(raw: str, key: str, numeric: bool = True) -> str | None:
     """Right FINAL but the trace looks like a lucky guess or a hedge."""
-    finals = FINAL_RE.findall(raw or "")
+    finals = FINAL_RE_V2.findall(raw or "")
     if len(finals) >= 2:
         norms = {normalize(f, numeric) for f in finals}
         if len(norms) > 1:
@@ -314,7 +314,7 @@ def suspicious_reason(raw: str, key: str, numeric: bool = True) -> str | None:
     last = last_final(raw)
     if not last:
         return None
-    before = (raw or "").rsplit("FINAL:", 1)[0]
+    before = (raw or "")[: (raw or "").lower().rfind("final:")]
     if HEDGE_RE.search(before):
         return "hedged_then_correct"
     return None

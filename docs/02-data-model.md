@@ -15,7 +15,7 @@ SQLite file: `data/frontier_lens.db` (gitignored). Created on first seed.
 | stem, code, lang, input_files_json, key | key from sandbox, run twice |
 | source | `seed` or `generated` |
 | generator_model, generator_mode, source_fail_ids | generated only; empty on eval generation |
-| reward_fn | `exact_match_v1` |
+| reward_fn | `exact_match_v2` |
 | audit_batch_id | generated items accepted via an audit batch |
 
 ## models
@@ -24,7 +24,7 @@ Registry from `models.yaml`: id, role (`policy` / `reference` / `generator`), fa
 
 ## eval_runs / attempts
 
-Runs store k (policy default 8, reference default 3). Attempts: sample_index 1..k, raw_output, parsed_answer, is_correct from `exact_match_v1` on the last `FINAL:` line.
+Runs store k (policy default 8, reference default 3). Attempts: sample_index 1..k, raw_output, parsed_answer, is_correct from `exact_match_v2` on the last `FINAL:` line.
 
 Run status: `queued` → `running` → `complete`, or `failed` / `interrupted`. `config_json` holds what is needed to resume (models, k, question ids, judge, verifier). A running job refreshes `heartbeat_at` and `pid` every few seconds; a `queued`/`running` run with no heartbeat for 90 s is marked `interrupted`. `phase` (`primary` / `verifier` / `flagging` / `done`) and `planned_primary` / `planned_verifier` drive the progress bar, and `error` keeps the last failure. Resuming (`python -m frontier_lens.eval_job RUN_ID`) samples only the (model, question, sample) triples the run does not have yet.
 

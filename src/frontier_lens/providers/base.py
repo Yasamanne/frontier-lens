@@ -10,6 +10,7 @@ class Completion:
     latency_ms: int
     tokens_in: int | None
     tokens_out: int | None
+    truncated: bool = False   # the reply used the whole max_tokens budget
 
 
 class Provider(Protocol):
