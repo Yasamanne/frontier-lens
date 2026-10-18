@@ -22,7 +22,7 @@ from sqlalchemy import text
 
 from frontier_lens.db import get_engine
 from frontier_lens.parse import normalize
-from frontier_lens.scope import NOT_BROKEN, run_clause
+from frontier_lens.scope import NOT_BROKEN, dataset_clause, run_clause
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -94,6 +94,7 @@ def failure_modes(
     topic: str,
     band: str,
     split: str = "train",
+    dataset: str | None = None,
 ) -> dict:
     """
     Return a failure-mode analysis dict for the given (run, model, topic, band) cell.
@@ -130,9 +131,10 @@ def failure_modes(
                   AND q.band    = :b
                   AND q.split   = :split
                   AND {NOT_BROKEN}
+                  AND {dataset_clause("ds")}
                 """
             ),
-            {"r": run_id, "m": model_id, "t": topic, "b": band, "split": split},
+            {"r": run_id, "m": model_id, "t": topic, "b": band, "split": split, "ds": dataset},
         ).mappings().all()
 
     # group by question
@@ -314,7 +316,9 @@ def rl_suitable_questions(
     return result
 
 
-def failure_modes_all_cells(run_id: str, model_id: str, split: str = "train") -> list[dict]:
+def failure_modes_all_cells(
+    run_id: str, model_id: str, split: str = "train", dataset: str | None = None
+) -> list[dict]:
     """Return failure analysis for every (topic, band) cell that has failing questions."""
     engine = get_engine()
     with engine.connect() as conn:
@@ -325,15 +329,15 @@ def failure_modes_all_cells(run_id: str, model_id: str, split: str = "train") ->
                 FROM attempts a
                 JOIN questions q ON q.id = a.question_id
                 WHERE {run_clause("r")} AND a.model_id = :m AND q.split = :split
-                  AND {NOT_BROKEN}
+                  AND {NOT_BROKEN} AND {dataset_clause("ds")}
                 """
             ),
-            {"r": run_id, "m": model_id, "split": split},
+            {"r": run_id, "m": model_id, "split": split, "ds": dataset},
         ).all()
 
     out = []
     for topic, band in cells:
-        analysis = failure_modes(run_id, model_id, topic, band, split)
+        analysis = failure_modes(run_id, model_id, topic, band, split, dataset)
         if analysis["n_failing_questions"] > 0:
             out.append({"topic": topic, "band": band, **analysis})
     return out

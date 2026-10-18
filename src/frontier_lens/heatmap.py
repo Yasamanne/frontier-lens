@@ -5,11 +5,11 @@ from collections import defaultdict
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
-from frontier_lens.scope import NOT_BROKEN, run_clause
+from frontier_lens.scope import NOT_BROKEN, dataset_clause, run_clause
 from frontier_lens.stats import cell_stats
 
 
-def load_cell_rows(run_id: str, split: str = "train"):
+def load_cell_rows(run_id: str, split: str = "train", dataset: str | None = None):
     engine = get_engine()
     with engine.connect() as conn:
         rows = conn.execute(
@@ -19,15 +19,18 @@ def load_cell_rows(run_id: str, split: str = "train"):
                 FROM attempts a
                 JOIN questions q ON q.id = a.question_id
                 WHERE {run_clause("run")} AND q.split = :split AND {NOT_BROKEN}
+                  AND {dataset_clause("ds")}
                 """
             ),
-            {"run": run_id, "split": split},
+            {"run": run_id, "split": split, "ds": dataset},
         ).mappings().all()
     return list(rows)
 
 
-def heatmap(run_id: str, model_id: str, split: str = "train") -> list:
-    rows = [r for r in load_cell_rows(run_id, split) if r["model_id"] == model_id]
+def heatmap(
+    run_id: str, model_id: str, split: str = "train", dataset: str | None = None
+) -> list:
+    rows = [r for r in load_cell_rows(run_id, split, dataset) if r["model_id"] == model_id]
     by_item: dict[tuple[str, str, str], list[bool]] = defaultdict(list)
     for r in rows:
         by_item[(r["topic"], r["band"], r["qid"])].append(bool(r["is_correct"]))
