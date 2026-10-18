@@ -171,26 +171,3 @@ def _store_hinted_candidate(
         )
     print(f"hint-candidate {cid} source={source_qid} {status} pass_rate={rate:.3f}")
     return cid
-
-
-def _get_rejected_variants(source_qid: str, limit: int = 10) -> list[str]:
-    """Return stems of candidates previously rejected for this source question.
-
-    Used to populate the 'avoid these patterns' section of generation prompts
-    so the generator doesn't repeat what an SME already found bad.
-    """
-    engine = get_engine()
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT stem FROM candidates
-                WHERE status = 'rejected'
-                  AND source_fail_ids LIKE :pat
-                ORDER BY created_at DESC
-                LIMIT :lim
-                """
-            ),
-            {"pat": f"%{source_qid}%", "lim": limit},
-        ).scalars().all()
-    return [s for s in rows if s]

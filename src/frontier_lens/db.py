@@ -167,7 +167,8 @@ def _migrate(conn) -> None:
             ("audit_sampled", "INTEGER"),
             ("run_id", "TEXT"),
         ],
-        "reviews": [("kind", "TEXT")],
+        # reasons: JSON list of feedback.REASONS codes; original_stem: stem before an SME edit.
+        "reviews": [("kind", "TEXT"), ("reasons", "TEXT"), ("original_stem", "TEXT")],
         # Background-run state; see frontier_lens.runstate.
         "eval_runs": [
             ("config_json", "TEXT"),

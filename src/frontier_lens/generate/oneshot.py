@@ -4,6 +4,7 @@ from sqlalchemy import text
 
 from frontier_lens.db import get_engine
 from frontier_lens.failure_analysis import failure_modes, failure_summary_text
+from frontier_lens.feedback import context_for as sme_feedback_for
 from frontier_lens.heatmap import weakest_cell
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import sync_models
@@ -89,9 +90,11 @@ def propose_one_shot(
         raise RuntimeError("no heatmap cell")
     fails = _failures(run_id, model_id, cell.topic, cell.band)
     fa_text = _failure_analysis_text(run_id, model_id, cell.topic, cell.band)
+    sme_feedback = sme_feedback_for(cell.topic)
     for _ in range(n):
         prompt = ONE_SHOT_TRAIN.format(
-            topic=cell.topic, band=cell.band, failures=fails, failure_analysis=fa_text
+            topic=cell.topic, band=cell.band, failures=fails, failure_analysis=fa_text,
+            sme_feedback=sme_feedback,
         )
         completion = provider.complete(prompt, gen.model, skip_correction=True)
         cid = _store_candidate(

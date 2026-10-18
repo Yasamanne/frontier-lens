@@ -188,6 +188,7 @@ def promote(
     kind: str = "audit",
     edited_stem: str | None = None,
     edited_code: str | None = None,
+    reasons: list[str] | None = None,
 ) -> None:
     """Approve or reject a candidate.
 
@@ -195,6 +196,9 @@ def promote(
     the stored values), the candidate row is updated before promotion so the
     edited version is what lands in the questions table.  The sandbox is always
     re-run on the final code so the gold key is fresh.
+
+    *reasons* (codes from ``feedback.REASONS``), *note* and the pre-edit stem are
+    kept on the review and fed back to the generators (``feedback.context_for``).
     """
     engine = get_engine()
     with engine.begin() as conn:
@@ -221,9 +225,12 @@ def promote(
                 """
                 INSERT INTO reviews (
                     candidate_id, fair, novel, hard_for_right_reason, label, note,
-                    reviewer, decided_at, kind
+                    reviewer, decided_at, kind, reasons, original_stem
                 )
-                VALUES (:id, :fair, :novel, :hard, :label, :note, :who, :ts, :kind)
+                VALUES (
+                    :id, :fair, :novel, :hard, :label, :note, :who, :ts, :kind,
+                    :reasons, :original_stem
+                )
                 """
             ),
             {
@@ -236,6 +243,8 @@ def promote(
                 "who": SME_NAME,
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "kind": kind,
+                "reasons": json.dumps(reasons or []),
+                "original_stem": cand["stem"] if stem_to_use != cand["stem"] else None,
             },
         )
         if label in DEFECT_LABELS:

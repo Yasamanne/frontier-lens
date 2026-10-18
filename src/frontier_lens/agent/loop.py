@@ -7,6 +7,7 @@ from openai import OpenAI
 
 from frontier_lens.agent.budget import MAX_STEPS
 from frontier_lens.agent.tools import handle, tools_for
+from frontier_lens.feedback import context_for as sme_feedback_for
 from frontier_lens.generate import _eval_cells
 from frontier_lens.heatmap import weakest_cell
 from frontier_lens.registry import sync_models
@@ -44,7 +45,9 @@ def propose_agent(
             f"Use tools. run_id={run_id} model_id={model_id}. "
             "Call estimate_pass_rate and aim for 0 < pass_rate < 1. "
             "Do not query evaluated model outputs except via get_cell_failures. "
-            "Call submit_candidate when ready."
+            "Call submit_candidate when ready.\n\n"
+            "HUMAN REVIEWER (SME) FEEDBACK — avoid what SMEs rejected, aim for what they approved:\n"
+            + sme_feedback_for(cell_topic)
         )
 
     ids: list[str] = []

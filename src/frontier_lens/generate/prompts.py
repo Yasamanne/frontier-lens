@@ -23,8 +23,8 @@ Computed answer (from running the code): {computed_key}
 ══ PRIOR APPROVED/PENDING VARIANTS ══
 {prior_variants}
 
-══ PREVIOUSLY REJECTED VARIANTS (SME rejected these — factor into distinctness score) ══
-{rejected_variants}
+══ HUMAN REVIEWER (SME) FEEDBACK — what SMEs rejected and approved before ══
+{sme_feedback}
 
 ══ CRITERIA ══
 
@@ -42,6 +42,10 @@ Computed answer (from running the code): {computed_key}
 
 5. DIFFICULTY APPROPRIATE (0–20): Neither trivially easy nor impossibly hard
    for band={band}. The model should sometimes pass, sometimes fail.
+
+SME feedback overrides your own taste: if the generated question repeats a
+problem SMEs flagged above, it must not pass (score at most 70) and that
+problem must appear in "issues".
 
 Return JSON only:
 {{
@@ -76,8 +80,8 @@ Fix instructions: {fix_instructions}
 PRIOR APPROVED/PENDING VARIANTS (must differ from ALL):
 {prior_variants}
 
-PREVIOUSLY REJECTED VARIANTS — SME found these bad, avoid these patterns entirely:
-{rejected_variants}
+HUMAN REVIEWER (SME) FEEDBACK — the fix must not reintroduce any of these problems:
+{sme_feedback}
 
 Apply the fix instructions and produce an improved question.
 Keep what was good; fix only what the reviewer flagged.
@@ -128,6 +132,9 @@ You know the answer is "{gold_key}". Use this knowledge to craft a precise hint 
 nudges the solver toward the right approach WITHOUT stating the answer or the decisive step.
 The hint should be embedded naturally at the end of the stem (e.g. as "Hint:" or "Note:").
 
+HUMAN REVIEWER (SME) FEEDBACK ON EARLIER HINTS — do not repeat these problems:
+{sme_feedback}
+
 Return JSON only:
 {{"stem": "<full updated stem with the new hint appended at the end>", "hint": "<just the new sentence you added>"}}
 """
@@ -148,8 +155,8 @@ Gold answer of seed (known to you — use to guide difficulty, do NOT reveal): {
 Prior approved/pending variants for this seed (must differ from ALL of these):
 {prior_variants}
 
-PREVIOUSLY REJECTED VARIANTS — SME found these bad, avoid these patterns entirely:
-{rejected_variants}
+HUMAN REVIEWER (SME) FEEDBACK — avoid what SMEs rejected, aim for what they approved:
+{sme_feedback}
 
 The new question must have a unique, deterministic answer verifiable by running code.
 The policy model should sometimes pass and sometimes fail (0 < pass_rate < 1).
@@ -172,6 +179,9 @@ BAND:  {band}
 
 SEED QUESTION:
 {stem}
+
+HUMAN REVIEWER (SME) FEEDBACK — avoid what SMEs rejected, aim for what they approved:
+{sme_feedback}
 
 AVAILABLE TOOLS (use sparingly — you have at most {max_loops} tool-call rounds):
   run_snippet   — execute code in a sandbox; use this to verify your verifier code is correct
@@ -203,6 +213,9 @@ Band: {band}
 
 === FAILING QUESTION STEMS (do NOT clone, use for inspiration only) ===
 {failures}
+
+=== HUMAN REVIEWER (SME) FEEDBACK — avoid what SMEs rejected, aim for what they approved ===
+{sme_feedback}
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true}}

@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from frontier_lens.config import POLICY_K
 from frontier_lens.db import get_engine
+from frontier_lens.feedback import context_for as sme_feedback_for
 from frontier_lens.parallel import map_with_events
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import sync_models
@@ -110,6 +111,8 @@ def rescue_with_hints(
         ]
 
         # ── Progressive hint loop ─────────────────────────────────────────
+        # SME feedback on earlier rescue hints for this topic (e.g. answer leaks).
+        hint_feedback = sme_feedback_for(q["topic"], source_id=qid, hints=True)
         current_stem = q["stem"]
         hint_rounds: list[dict] = []
         rescued = False
@@ -131,6 +134,7 @@ def rescue_with_hints(
                 max_hints=max_hints,
                 current_stem=current_stem,
                 level_instruction=level_instr,
+                sme_feedback=hint_feedback,
             )
             completion = provider.complete(prompt, gen.model, skip_correction=True)
 
