@@ -309,8 +309,46 @@ stem,key,topic,difficulty,solution_steps
         )
 
     # ── File uploader ─────────────────────────────────────────────────────
-    if _msg := st.session_state.pop("upload_import_msg", None):
-        st.success(_msg)
+    def _show_import_result(_res: dict) -> None:
+        """Clear result of the last import: count first, breakdown under it."""
+        _added = _res["added"]
+        if _added:
+            _headline = (
+                f"✅ **{_added:,} task{'s' if _added != 1 else ''} uploaded** from `{_res['file']}`. "
+                f"The database now holds {_res['total_uploaded']:,} uploaded tasks, "
+                "available in Evaluate right away."
+            )
+            st.success(_headline)
+            st.toast(f"{_added:,} task(s) uploaded from {_res['file']}", icon="✅")
+        else:
+            st.warning(
+                f"⚠️ **No new tasks were uploaded** from `{_res['file']}`: "
+                "every selected row was already in the database."
+            )
+        _parts = [f"Selected for import: {_res['selected']:,}", f"added: {_added:,}"]
+        if _res["already_in_db"]:
+            _parts.append(f"already in the database (skipped): {_res['already_in_db']:,}")
+        if _res["replaced"]:
+            _parts.append("existing rows with the same id were replaced")
+        if _res["exact_dupes"]:
+            _parts.append(f"exact duplicates removed from the file: {_res['exact_dupes']:,}")
+        if _res["near_dupes"]:
+            _parts.append(f"near-duplicates skipped: {_res['near_dupes']:,}")
+        if _res["sampled_out"]:
+            _parts.append(f"left out by the random sample: {_res['sampled_out']:,}")
+        st.caption(" · ".join(_parts))
+        if _res["labels"]:
+            _lb = _res["labels"]
+            st.caption(
+                f"LLM labels filled {_lb['filled']:,} of {_lb['needed']:,} row(s)"
+                + (f"; {_lb['failed']} call(s) failed, those rows kept the defaults" if _lb["failed"] else "")
+                + (f"; new topics: {', '.join(_lb['topics'])}" if _lb["topics"] else "")
+                + "."
+            )
+
+
+    _import_result = st.session_state.pop("upload_import_result", None)
+    _result_shown = False
 
     # While an import runs the controls are locked, so a second click or a file swap
     # cannot interrupt it (Streamlit reruns the script on every interaction).
@@ -516,7 +554,7 @@ stem,key,topic,difficulty,solution_steps
                 # Clear the flag first: this run still draws every control disabled, and an
                 # error or a refresh can then never leave the page locked.
                 st.session_state["seed_importing"] = False
-                label_note = ""
+                label_summary = None
                 if use_labels:
                     known = sorted(
                         set(uploaded_topics())
@@ -529,24 +567,43 @@ stem,key,topic,difficulty,solution_steps
                         progress=lambda d, t: bar.progress(d / t, text=f"Labelling… {d}/{t} calls"),
                     )
                     bar.empty()
-                    label_note = (
-                        f" LLM labels filled {report.rows_labeled} of {report.rows_needing_labels} "
-                        f"row(s)"
-                        + (f"; {report.failed_batches} call(s) failed, those rows kept defaults"
-                           if report.failed_batches else "")
-                        + (f"; new topics: {', '.join(report.new_topics)}" if report.new_topics else "")
-                        + "."
-                    )
+                    label_summary = {
+                        "filled": report.rows_labeled,
+                        "needed": report.rows_needing_labels,
+                        "failed": report.failed_batches,
+                        "topics": list(report.new_topics),
+                    }
                 n = import_rows(_seed_rows, replace=replace, filename=uploaded_file.name)
-                # Stash the message: st.rerun() would otherwise wipe it before it renders
-                st.session_state["upload_import_msg"] = (
-                    f"Imported **{n}** new question(s) from `{uploaded_file.name}`. "
-                    "They appear in the Evaluate tab immediately." + label_note
-                )
+                with engine.connect() as conn:
+                    total_uploaded = conn.execute(
+                        text("SELECT COUNT(*) FROM questions WHERE source='uploaded'")
+                    ).scalar() or 0
+                # Stash the result: st.rerun() would otherwise wipe it before it renders
+                st.session_state["upload_import_result"] = {
+                    "file": uploaded_file.name,
+                    "added": n,
+                    "selected": len(_seed_rows),
+                    "already_in_db": 0 if replace else max(0, len(_seed_rows) - n),
+                    "replaced": bool(replace),
+                    "exact_dupes": result.n_duplicates_skipped,
+                    "near_dupes": n_skipped_fuzzy,
+                    "sampled_out": len(base_rows) - len(_seed_rows),
+                    "labels": label_summary,
+                    "total_uploaded": total_uploaded,
+                }
                 st.rerun()
 
             if role != "Organizer":
                 st.caption("Switch Role to **Organizer** to import.")
+
+            # Result of the import that just finished, right where the user clicked.
+            if _import_result:
+                _show_import_result(_import_result)
+                _result_shown = True
+
+    # No file selected any more (e.g. cleared after the import): show the result here.
+    if _import_result and not _result_shown:
+        _show_import_result(_import_result)
 
     # ── Uploaded files in DB ──────────────────────────────────────────────
     st.divider()
