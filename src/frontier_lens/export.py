@@ -168,6 +168,10 @@ def load_sft_rows(run_id: str | None = None) -> list[SftRow]:
                 FROM attempts a JOIN questions q ON q.id=a.question_id
                 JOIN models m ON m.id=a.model_id
                 WHERE a.run_id=:r AND a.is_correct=1 AND m.role IN ('policy', 'reference')
+                  -- Train only: eval traces in SFT would leak the held-out set into training.
+                  AND q.split = 'train'
+                  -- Skip items an SME marked broken (their gold key is suspect).
+                  AND COALESCE(q.sme_flagged, 0) != 2
                 """
             ),
             {"r": run_id},

@@ -21,6 +21,7 @@ _ALL_TOPICS = (
     "minimax",       # game-tree backward induction
     "logic_grid",    # positional constraint propagation
 )
+TOPICS = _ALL_TOPICS
 
 
 @lru_cache(maxsize=1)

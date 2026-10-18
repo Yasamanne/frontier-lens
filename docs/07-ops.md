@@ -2,7 +2,7 @@
 
 ## Env
 
-Copy `.env.example` to `.env` (gitignored). `OPENROUTER_API_KEY` is required for live contest and generation. `OLLAMA_BASE_URL` is unused unless you add a local row in `models.yaml`. `DATABASE_URL` defaults to `sqlite:///data/frontier_lens.db`. `SPEND_CAP_USD` defaults to 5.
+Copy `.env.example` to `.env` (gitignored). `OPENROUTER_API_KEY` is required for live contest and generation. `OLLAMA_BASE_URL` is unused unless you add a local row in `models.yaml`. `DATABASE_URL` defaults to `sqlite:///data/frontier_lens.db`. `SPEND_CAP_USD` defaults to 5 (not enforced yet).
 
 No keys are required for seed, tests, or fixture replay.
 
@@ -26,4 +26,4 @@ The AST/shlex sandbox is **not** a production isolation boundary. Later: gVisor,
 
 ## Spend
 
-Contest and generation honor `SPEND_CAP_USD`. One live Evaluate at a time (SQLite WAL, single writer). Runs resume from the last unanswered item.
+`SPEND_CAP_USD` is read into config but not enforced yet; the Evaluate page shows a call-count estimate before a run. One live Evaluate at a time (SQLite WAL, single writer). Interrupted runs resume from the missing (model, question, sample) triples.
