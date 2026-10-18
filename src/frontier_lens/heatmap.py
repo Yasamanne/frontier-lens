@@ -5,6 +5,7 @@ from collections import defaultdict
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
+from frontier_lens.scope import NOT_BROKEN, run_clause
 from frontier_lens.stats import cell_stats
 
 
@@ -13,11 +14,11 @@ def load_cell_rows(run_id: str, split: str = "train"):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                """
+                f"""
                 SELECT q.topic, q.band, q.id as qid, a.model_id, a.is_correct
                 FROM attempts a
                 JOIN questions q ON q.id = a.question_id
-                WHERE a.run_id = :run AND q.split = :split
+                WHERE {run_clause("run")} AND q.split = :split AND {NOT_BROKEN}
                 """
             ),
             {"run": run_id, "split": split},
@@ -56,7 +57,16 @@ def print_heatmap(run_id: str, model_id: str) -> None:
         )
 
 
+# A cell with fewer items is too noisy to steer generation.
+MIN_CELL_ITEMS = 3
+
+
 def weakest_cell(run_id: str, model_id: str):
+    """Cell to target next: confirmed-weak cells first, then lowest accuracy.
+
+    Cells with fewer than ``MIN_CELL_ITEMS`` items are skipped unless every cell is that small.
+    """
     cells = heatmap(run_id, model_id)
-    ranked = sorted(cells, key=lambda c: (c.accuracy, c.hi))
+    eligible = [c for c in cells if c.n >= MIN_CELL_ITEMS] or cells
+    ranked = sorted(eligible, key=lambda c: (not c.weak, c.accuracy, c.hi))
     return ranked[0] if ranked else None

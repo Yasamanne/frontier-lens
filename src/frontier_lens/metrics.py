@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
+from frontier_lens.scope import NOT_BROKEN, run_clause
 from frontier_lens.stats import headroom, in_learnable_band, pass_at_k, pass_rate, wilson_interval
 
 
@@ -53,10 +55,10 @@ def junk_by_mode() -> dict:
 def policy_item_rates(run_id: str, model_id: str, split: str | None = "train") -> list[dict]:
     engine = get_engine()
     with engine.connect() as conn:
-        sql = """
+        sql = f"""
             SELECT q.id, q.template, q.source, q.generator_mode, q.split, a.is_correct
             FROM attempts a JOIN questions q ON q.id=a.question_id
-            WHERE a.run_id=:r AND a.model_id=:m
+            WHERE {run_clause("r")} AND a.model_id=:m AND {NOT_BROKEN}
         """
         params: dict = {"r": run_id, "m": model_id}
         if split:
@@ -93,6 +95,30 @@ def policy_item_rates(run_id: str, model_id: str, split: str | None = "train") -
             }
         )
     return out
+
+
+HIST_LABELS = (
+    ["0 (out)"]
+    + ["0–⅛", "⅛–¼", "¼–⅜", "⅜–½", "½–⅝", "⅝–¾", "¾–⅞", "⅞–1"]
+    + ["1 (out)"]
+)
+
+
+def histogram_counts(rates: list[float]) -> list[int]:
+    """Count pass rates into ``HIST_LABELS``: exactly 0, eight interior eighths, exactly 1.
+
+    Interior bars include their upper edge, so 1/8 is in "0–⅛" and 1/3 in "¼–⅜",
+    whatever k produced the rate.
+    """
+    counts = [0] * len(HIST_LABELS)
+    for r in rates:
+        if r <= 0:
+            counts[0] += 1
+        elif r >= 1:
+            counts[-1] += 1
+        else:
+            counts[min(8, max(1, math.ceil(r * 8 - 1e-9)))] += 1
+    return counts
 
 
 def band_share(items: list[dict]) -> dict:
