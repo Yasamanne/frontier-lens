@@ -1,18 +1,19 @@
-"""Hold out entire templates for eval so train items cannot leak into eval."""
+"""Assign harness / train / eval splits.
+
+Each family's eval items come from its own ``{topic}_eval`` template: the same
+generator run on a disjoint seed range. No template appears in both train and
+eval, but eval is near-distribution, not an unseen task type.
+"""
 
 from __future__ import annotations
+
+from frontier_lens.templates import TOPICS
 
 # Eval holds out a disjoint seed range of each generator family, under its own
 # template name, so a template never sits in both train and eval.
 # Train origins are 0..7. Eval origins are 10000..10003.
-EVAL_TEMPLATES = frozenset(
-    {
-        "shell_pipelines_eval",
-        "python_state_eval",
-        "constraint_counting_eval",
-        "multi_step_units_eval",
-    }
-)
+# Derived from the topic list so a new family cannot silently skip eval.
+EVAL_TEMPLATES = frozenset(f"{topic}_eval" for topic in TOPICS)
 
 
 def rl_split(template: str, level: int) -> str:

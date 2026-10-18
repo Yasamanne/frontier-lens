@@ -73,3 +73,37 @@ def test_eval_jsonl_omits_policy_feedback(tmp_path):
 def test_sft_row_schema():
     row = SftRow(prompt="p", completion="FINAL: 1", model="gemma4-e4b", item_id="x")
     assert row.model_dump()["item_id"] == "x"
+
+
+def test_sft_export_excludes_eval_harness_and_broken_items(tmp_path, monkeypatch):
+    from sqlalchemy import text
+
+    from frontier_lens import db
+    from frontier_lens.export import load_sft_rows
+    from frontier_lens.registry import sync_models
+
+    monkeypatch.setattr(db, "DATABASE_URL", f"sqlite:///{tmp_path / 'sft.db'}")
+    monkeypatch.setattr(db, "_engine", None)
+    engine = db.get_engine()
+    sync_models()
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO eval_runs (id, created_at, item_set_hash, status, k) "
+            "VALUES ('r', '2026-10-17T00:00:00+00:00', 'h', 'complete', 1)"
+        ))
+        for qid, split, flagged in [("tr", "train", 0), ("ev", "eval", 0),
+                                    ("hs", "harness", 0), ("br", "train", 2)]:
+            conn.execute(text(
+                """
+                INSERT INTO questions (id, topic, level, band, split, template, params_json, stem,
+                    code, lang, input_files_json, key, numeric, source, sme_flagged)
+                VALUES (:id, 't', 2, 'standard', :split, 't', '{}', 'stem', '', 'python', '{}',
+                        '4', 1, 'seed', :flagged)
+                """
+            ), {"id": qid, "split": split, "flagged": flagged})
+            conn.execute(text(
+                "INSERT INTO attempts (run_id, model_id, question_id, sample_index, raw_output, "
+                "is_correct, unparsable) VALUES ('r', 'gemma4-26b-a4b', :q, 1, 'FINAL: 4', 1, 0)"
+            ), {"q": qid})
+    assert [r.item_id for r in load_sft_rows("r")] == ["tr"]
+    engine.dispose()

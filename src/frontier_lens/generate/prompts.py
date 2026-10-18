@@ -91,7 +91,8 @@ Return JSON only:
 Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only.
 If topic or band are empty or unknown, infer them from the seed question:
-  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units.
+  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
+    fsm_queries, minimax, logic_grid.
   band must be one of: standard, hard.
 """
 
@@ -166,7 +167,8 @@ Return JSON only:
 Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 If Topic or Band above are empty or unknown, infer them from the seed question:
-  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units.
+  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
+    fsm_queries, minimax, logic_grid.
   band must be one of: standard, hard.
 """
 
@@ -199,7 +201,8 @@ RULES:
   - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
   - Python: only math, itertools, collections, decimal. No network, no external files.
   - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_candidate.
-    topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units.
+    topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
+      fsm_queries, minimax, logic_grid.
     band must be one of: standard, hard.
   - If TOPIC and BAND are already set above, you do NOT need to include them in submit_candidate.
 """

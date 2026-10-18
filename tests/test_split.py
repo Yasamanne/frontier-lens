@@ -16,3 +16,15 @@ def test_template_level_split_has_no_leakage():
             assert split == "harness"
         else:
             assert split == rl_split(spec.template, spec.level)
+
+
+def test_every_topic_has_held_out_eval_items():
+    from frontier_lens.templates import TOPICS
+
+    labeled = assign_splits(all_specs())
+    for topic in TOPICS:
+        splits = {split for spec, split in labeled if spec.topic == topic}
+        assert {"harness", "train", "eval"} <= splits, f"{topic} splits: {sorted(splits)}"
+    for spec, split in labeled:
+        # Eval-seed items (the {topic}_eval template) must never land in train.
+        assert (split == "eval") == (spec.template.endswith("_eval") and spec.level > 1)
