@@ -37,7 +37,7 @@ The tab also flags questions that *every* model failed, because those are either
 | **Train split only** | Excludes `eval` items. Ignored for uploaded files. | on |
 | **Role** (top right) | Organizer can run and stop; SME can review; Viewer is read-only. A UI switch, not authentication. | Viewer |
 
-The run button needs: a model selected, role = Organizer, `OPENROUTER_API_KEY` set, and no run already active.
+The run button needs: a model selected, role = Organizer, `OPENROUTER_API_KEY` set, and no run already active (any dataset). If a run starts elsewhere after the page rendered, the click is refused with a warning instead of starting a second run.
 
 ### Cost preview
 
@@ -176,7 +176,9 @@ Summary banner after a completed run:
 - The process writes a **heartbeat** every 5 s. `reap_stale` (called on every page load) marks any queued/running run silent for more than 90 s as `interrupted`.
 - **Ownership:** the job's `pid` must match the row. If you press Stop, or another process resumes the run, the old process sees it no longer owns the run and exits.
 - **Progress** is derived from `attempts` counts versus `planned_primary`, so it survives page reloads.
-- Only one run is active at a time from the UI (SQLite allows one writer).
+- **One run at a time, whatever the dataset.** While any run is queued or running (fresh heartbeat), the Evaluate and Resume buttons are disabled and a notice names the blocking run (batch, samples done). Unlock by waiting or by pressing Stop.
+- The rule is enforced in the job layer too, not only the button: `eval_job.create` and `launch` insert or arm a run with a single atomic SQL statement that only succeeds if no other live run exists, and raise `RunInProgress` otherwise. Another browser tab, a Resume, the CLI (`eval_job`, `contest --live`) all hit the same check. A refused start leaves no live run behind.
+- Why: SQLite has a single writer (heartbeat writes can stall up to its 30 s busy timeout, close to the 90 s stale limit), and the API concurrency limit is per process, so two jobs would double in-flight calls and trigger rate-limit errors.
 
 ## 9. Downloads
 
@@ -196,7 +198,7 @@ Summary banner after a completed run:
 | Policy near 100% | Question too easy, or the harness (L1) items | Expected for L1 |
 | Run stuck as running after closing Docker | Heartbeat stops; reaped to interrupted within ~90 s | Reload page, then Resume |
 | `database disk image is malformed` | Host and container sharing one SQLite file in WAL mode | Use one environment per `data/` folder |
-| Run button disabled | Viewer role, no key, nothing selected, or another run active | Sidebar status and role selector |
+| Run button disabled | Viewer role, no key, nothing selected, or another run active (the page names it) | Sidebar status, role selector, the lock notice above the button |
 
 ## 11. Limitations to keep in mind
 
