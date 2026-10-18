@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-from frontier_lens.config import POLICY_K, REFERENCE_K
+from frontier_lens.config import JUDGE_TEMPERATURE, POLICY_K, REFERENCE_K
 from frontier_lens.db import get_engine
 from frontier_lens.parallel import map_unordered
 from frontier_lens.parse import parse_final
@@ -111,7 +111,9 @@ def _build_judge_fn(specs: dict[str, ModelSpec], judge_model_id: str | None):
     provider = OpenAICompatibleProvider(spec.base_url or "", spec.api_key_env)
 
     def judge_fn(prompt: str) -> str:
-        return provider.complete(prompt, spec.model, skip_correction=True).text
+        return provider.complete(
+            prompt, spec.model, skip_correction=True, temperature=JUDGE_TEMPERATURE
+        ).text
 
     return judge_fn
 

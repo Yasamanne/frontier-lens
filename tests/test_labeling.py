@@ -112,6 +112,7 @@ def test_default_complete_turns_reasoning_off_for_the_judge(monkeypatch):
     assert labeling.default_complete()("hi") == "[]"
     assert seen["thinking"] is False
     assert seen["extra_body"] == {"reasoning": {"enabled": False}}
+    assert seen["temperature"] == 0.0
 
 
 def test_provider_merges_extra_body_with_thinking_flag(monkeypatch):
@@ -121,7 +122,7 @@ def test_provider_merges_extra_body_with_thinking_flag(monkeypatch):
     provider = OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
     sent: dict = {}
 
-    def fake_call(messages, model, extra_body=None, response_format=None):
+    def fake_call(messages, model, extra_body=None, response_format=None, temperature=None):
         sent["extra"] = extra_body
         return "ok", None
 
@@ -129,3 +130,23 @@ def test_provider_merges_extra_body_with_thinking_flag(monkeypatch):
     provider.complete("p", "m", thinking=False, skip_correction=True,
                       extra_body={"reasoning": {"enabled": False}})
     assert sent["extra"] == {"enable_thinking": False, "reasoning": {"enabled": False}}
+
+
+def test_provider_sends_temperature_only_when_asked(monkeypatch):
+    from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    provider = OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
+    bodies: list[dict] = []
+
+    class Resp:
+        usage = None
+        choices = [type("C", (), {"message": type("M", (), {"content": "ok"})()})()]
+
+    monkeypatch.setattr(
+        provider.client.chat.completions, "create", lambda **kw: bodies.append(kw) or Resp()
+    )
+    provider.complete("p", "m", skip_correction=True)
+    provider.complete("p", "m", skip_correction=True, temperature=0.0)
+    assert "temperature" not in bodies[0]
+    assert bodies[1]["temperature"] == 0.0

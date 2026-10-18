@@ -128,6 +128,7 @@ def _apply(batch: list[dict], labels: dict[int, tuple[str | None, str | None]]) 
 
 def default_complete() -> Callable[[str], str]:
     """Prompt -> text using the configured judge model."""
+    from frontier_lens.config import JUDGE_TEMPERATURE
     from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
     from frontier_lens.registry import judge_spec
 
@@ -143,6 +144,7 @@ def default_complete() -> Callable[[str], str]:
         return provider.complete(
             prompt, spec.model, thinking=False, skip_correction=True,
             extra_body={"reasoning": {"enabled": False}},
+            temperature=JUDGE_TEMPERATURE,
         ).text
 
     return complete

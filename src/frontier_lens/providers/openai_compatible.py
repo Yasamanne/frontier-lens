@@ -52,6 +52,7 @@ class OpenAICompatibleProvider:
         model: str,
         extra_body: dict | None = None,
         response_format: dict | None = None,
+        temperature: float | None = None,
     ) -> tuple[str, object]:
         """Raw chat call with retry on transient errors. Returns (text, usage)."""
         for attempt in range(RETRY_ATTEMPTS):
@@ -64,6 +65,8 @@ class OpenAICompatibleProvider:
                     kwargs["extra_body"] = extra_body
                 if response_format:
                     kwargs["response_format"] = response_format
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
                 with call_slot():
                     resp = self.client.chat.completions.create(**kwargs)
                 return resp.choices[0].message.content or "", resp.usage
@@ -101,6 +104,7 @@ class OpenAICompatibleProvider:
         skip_correction: bool = False,
         json_mode: bool = False,
         extra_body: dict | None = None,
+        temperature: float | None = None,
     ) -> Completion:
         """Call the model once (with an optional FINAL: correction turn).
 
@@ -127,7 +131,7 @@ class OpenAICompatibleProvider:
         response_format = self._JSON_SCHEMA if json_mode else None
 
         text, usage = self._call(messages, model, extra_body=extra,
-                                  response_format=response_format)
+                                  response_format=response_format, temperature=temperature)
 
         # Strip residual <think>…</think> blocks that some models leak even when
         # thinking is disabled (DeepSeek, Qwen3).
@@ -157,7 +161,8 @@ class OpenAICompatibleProvider:
             ]
             try:
                 correction_text, correction_usage = self._call(messages, model, extra_body=extra,
-                                                                response_format=response_format)
+                                                                response_format=response_format,
+                                                                temperature=temperature)
                 correction_text = _re.sub(
                     r"<think>.*?</think>", "", correction_text, flags=_re.DOTALL
                 ).strip()
