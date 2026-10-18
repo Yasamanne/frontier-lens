@@ -39,7 +39,7 @@ from sqlalchemy import text
 
 from frontier_lens import eval_job, runstate
 from frontier_lens.config import OPENROUTER_API_KEY
-from frontier_lens.contest import generate_results_csv, run_config
+from frontier_lens.contest import generate_results_csv, run_config, update_key_and_regrade
 from frontier_lens.db import get_engine
 from frontier_lens.registry import judge_spec, load_yaml
 from frontier_lens.runlog import logs_for_download
@@ -786,16 +786,15 @@ elif sme_qs:
                     "Edit gold key", value=q["key"], key=f"sme-key-{q['id']}"
                 )
                 if new_key != q["key"] and col_key.button("💾 Save key", key=f"sme-save-{q['id']}"):
-                    with engine.begin() as conn2:
-                        conn2.execute(
-                            text("UPDATE questions SET key=:k, sme_flagged=0 WHERE id=:id"),
-                            {"k": new_key, "id": q["id"]},
-                        )
+                    n_regraded = update_key_and_regrade(q["id"], new_key)
                     if _sme_run_qids and q["id"] in _sme_run_qids:
                         st.session_state["sme_current_run_qids"] = [
                             x for x in _sme_run_qids if x != q["id"]
                         ]
-                    st.success(f"Key updated to `{new_key}`. Removed from SME queue.")
+                    st.success(
+                        f"Key updated to `{new_key}`. Re-graded stored attempts "
+                        f"({n_regraded} changed). Removed from SME queue."
+                    )
                     st.rerun()
             else:
                 st.info("Switch Role to **Organizer** or **SME** to take action.")

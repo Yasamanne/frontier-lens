@@ -204,12 +204,16 @@ def zero_pass_questions(
     run_id: str,
     model_id: str,
     split: str = "train",
+    *,
+    include_uncoded: bool = False,
 ) -> list[dict]:
     """Return questions where the model got 0 correct across ALL k attempts (pass@k = 0).
 
-    Only returns questions with non-empty verifier code — uploaded questions with
-    hardcoded keys (empty code, multiple-choice answers like ``$B$``) are excluded
-    because the sandbox cannot re-run them and calibration will always return 0.
+    By default only returns questions with non-empty verifier code — uploaded
+    questions with hardcoded keys (empty code, multiple-choice answers like
+    ``$B$``) are excluded because the sandbox cannot re-run them and rescue
+    calibration will always return 0. Pass ``include_uncoded=True`` to list them
+    too (they can never be rescued, so they belong straight in the SFT pool).
 
     Each entry::
 
@@ -236,15 +240,14 @@ def zero_pass_questions(
                 WHERE a.run_id  = :r
                   AND a.model_id = :m
                   AND q.split   = :split
-                  AND q.code IS NOT NULL
-                  AND TRIM(q.code) != ''
+                  AND (:uncoded = 1 OR (q.code IS NOT NULL AND TRIM(q.code) != ''))
                   AND COALESCE(q.sme_flagged, 0) = 0
                 GROUP BY q.id
                 HAVING SUM(a.is_correct) = 0
                    AND (COUNT(*) - SUM(a.unparsable)) > 0
                 """
             ),
-            {"r": run_id, "m": model_id, "split": split},
+            {"r": run_id, "m": model_id, "split": split, "uncoded": int(include_uncoded)},
         ).mappings().all()
     return [dict(r) for r in rows]
 

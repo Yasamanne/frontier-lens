@@ -547,6 +547,42 @@ def run_verifier(
         )
 
 
+def update_key_and_regrade(question_id: str, new_key: str) -> int:
+    """Set a question's gold key and re-grade its stored attempts against it.
+
+    Returns how many attempts changed their ``is_correct``. Uses exact match
+    only: the LLM judge is not re-run, so a sample earlier credited by the
+    judge keeps no credit unless it now matches the key exactly.
+    """
+    engine = get_engine()
+    changed = 0
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE questions SET key=:k, sme_flagged=0 WHERE id=:id"),
+            {"k": new_key, "id": question_id},
+        )
+        numeric = bool(
+            conn.execute(
+                text("SELECT numeric FROM questions WHERE id=:id"), {"id": question_id}
+            ).scalar()
+        )
+        rows = conn.execute(
+            text("SELECT id, raw_output, is_correct FROM attempts WHERE question_id=:id"),
+            {"id": question_id},
+        ).mappings().all()
+        for a in rows:
+            reward, parsed_ans, unparsable = grade(a["raw_output"] or "", new_key, numeric=numeric)
+            conn.execute(
+                text(
+                    "UPDATE attempts SET is_correct=:ok, parsed_answer=:ans, unparsable=:unp "
+                    "WHERE id=:id"
+                ),
+                {"ok": reward, "ans": parsed_ans, "unp": int(unparsable), "id": a["id"]},
+            )
+            changed += int(bool(a["is_correct"]) != bool(reward))
+    return changed
+
+
 def generate_results_csv(
     run_id: str,
     primary_model_ids: list[str],

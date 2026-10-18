@@ -210,3 +210,44 @@ def test_broken_questions_are_not_sampled_or_reflagged(tmp_db):
     with tmp_db.connect() as conn:
         flags = dict(conn.execute(text("SELECT id, sme_flagged FROM questions")).all())
     assert flags == {"ok": 1, "broken": 2}
+
+
+def test_key_edit_regrades_stored_attempts(tmp_db):
+    from frontier_lens.contest import update_key_and_regrade
+
+    _add_question(tmp_db, "q1", "4")
+    runstate.insert_run("r", ["q1"], 2, None, {}, status="complete")
+    with tmp_db.begin() as conn:
+        for i, out in enumerate(["FINAL: 5", "no final line"], start=1):
+            conn.execute(
+                text(
+                    "INSERT INTO attempts (run_id, model_id, question_id, sample_index, "
+                    "raw_output, is_correct, unparsable) VALUES ('r', 'm', 'q1', :i, :o, 0, 0)"
+                ),
+                {"i": i, "o": out},
+            )
+        conn.execute(text("UPDATE questions SET sme_flagged=1 WHERE id='q1'"))
+    assert update_key_and_regrade("q1", "5") == 1
+    with tmp_db.connect() as conn:
+        rows = conn.execute(
+            text("SELECT is_correct, unparsable FROM attempts ORDER BY sample_index")
+        ).all()
+        flag = conn.execute(text("SELECT sme_flagged FROM questions")).scalar()
+    assert rows == [(1, 0), (0, 1)]
+    assert flag == 0
+
+
+def test_zero_pass_lists_uncoded_questions_only_on_request(tmp_db):
+    from frontier_lens.failure_analysis import zero_pass_questions
+
+    _add_question(tmp_db, "up", "B")  # uploaded: empty code
+    runstate.insert_run("r", ["up"], 1, None, {}, status="complete")
+    with tmp_db.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO attempts (run_id, model_id, question_id, sample_index, "
+                "raw_output, is_correct, unparsable) VALUES ('r', 'm', 'up', 1, 'FINAL: A', 0, 0)"
+            )
+        )
+    assert zero_pass_questions("r", "m") == []
+    assert [q["id"] for q in zero_pass_questions("r", "m", include_uncoded=True)] == ["up"]
