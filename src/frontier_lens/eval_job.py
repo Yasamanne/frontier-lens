@@ -138,7 +138,10 @@ def run_job(run_id: str) -> None:
                 )
                 if failed:
                     print(f"verifier {verifier} on {len(failed)} all-wrong question(s)", flush=True)
-                    run_verifier(run_id, verifier, failed, k_eff)
+                    run_verifier(
+                        run_id, verifier, failed, k_eff,
+                        judge_model_id=cfg.get("judge_model_id"),
+                    )
             runstate.set_fields(run_id, phase="flagging")
             flag_for_sme(
                 runstate.zero_correct_questions(run_id, models + ([verifier] if verifier else []))

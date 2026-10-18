@@ -266,3 +266,43 @@ def test_sme_validated_key_is_not_reflagged(tmp_db):
     eval_job.flag_for_sme(["q1"])
     with tmp_db.connect() as conn:
         assert conn.execute(text("SELECT sme_flagged FROM questions")).scalar() == 1
+
+
+def test_verifier_uses_the_same_judge_and_is_not_sft_data(tmp_db, monkeypatch):
+    import json
+
+    from frontier_lens import contest
+    from frontier_lens.export import load_sft_rows
+    from frontier_lens.failure_analysis import zero_pass_questions
+    from frontier_lens.providers.base import Completion
+    from frontier_lens.registry import sync_models
+
+    class FakeProvider:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, prompt, model, **kw):
+            # Judge prompts ask for YES/NO; contest prompts get a non-exact answer.
+            text = "YES" if "answer equivalence checker" in prompt else "FINAL: B"
+            return Completion(text=text, latency_ms=1, tokens_in=1, tokens_out=1)
+
+    monkeypatch.setattr(contest, "OpenAICompatibleProvider", FakeProvider)
+    sync_models()
+    _add_question(tmp_db, "q1", "A")
+    cfg = {"models": [POLICY], "verifier_model": "gemma4-31b"}
+    runstate.insert_run("r", ["q1"], 2, None, cfg, status="complete")
+    _add_attempt(tmp_db, "r", "q1", 1, 0)
+    with tmp_db.begin() as conn:
+        conn.execute(text("UPDATE attempts SET model_id=:m"), {"m": POLICY})
+
+    contest.run_verifier("r", "gemma4-31b", ["q1"], 1, judge_model_id="deepseek-v4.1-flash-judge")
+
+    with tmp_db.connect() as conn:
+        ver = conn.execute(
+            text("SELECT is_correct FROM attempts WHERE model_id='gemma4-31b'")
+        ).scalar()
+    assert ver == 1  # exact match fails ("B" vs "A"); the judge, as in the primary pass, accepts
+    assert load_sft_rows("r") == []  # verifier samples are not SFT data
+    # The primary still failed, so the question stays pass@k = 0 and can get hints.
+    assert [q["id"] for q in zero_pass_questions("r", POLICY, include_uncoded=True)] == ["q1"]
+    assert json.loads(runstate.load_run("r")["config_json"])["verifier_model"] == "gemma4-31b"
