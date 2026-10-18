@@ -137,8 +137,12 @@ def default_complete() -> Callable[[str], str]:
     provider = OpenAICompatibleProvider(spec.base_url or "", spec.api_key_env)
 
     def complete(prompt: str) -> str:
+        # Labelling needs no reasoning. The generic enable_thinking flag is ignored by some
+        # models on OpenRouter (3,500 hidden tokens, ~30-55 s per call); its own switch
+        # turns reasoning off and cuts a call to about 2 s.
         return provider.complete(
-            prompt, spec.model, thinking=bool(spec.thinking), skip_correction=True
+            prompt, spec.model, thinking=False, skip_correction=True,
+            extra_body={"reasoning": {"enabled": False}},
         ).text
 
     return complete

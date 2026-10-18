@@ -100,6 +100,7 @@ class OpenAICompatibleProvider:
         thinking: bool = True,
         skip_correction: bool = False,
         json_mode: bool = False,
+        extra_body: dict | None = None,
     ) -> Completion:
         """Call the model once (with an optional FINAL: correction turn).
 
@@ -118,6 +119,8 @@ class OpenAICompatibleProvider:
         extra: dict | None = None
         if not thinking:
             extra = {"enable_thinking": False}
+        if extra_body:  # provider-specific switches, e.g. OpenRouter's {"reasoning": {...}}
+            extra = {**(extra or {}), **extra_body}
 
         # JSON mode: request structured output so the model cannot forget FINAL:
         # The answer field maps directly to the FINAL: value.

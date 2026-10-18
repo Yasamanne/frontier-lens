@@ -77,7 +77,12 @@ def _render_seed_result(row: dict) -> None:
             f"✅ Seeded {items[0]['inserted']} questions. Go to **Evaluate** (page 2) to run the model."
         )
 
-tab_auto, tab_upload = st.tabs(["🌱 Auto-generate", "📂 Upload CSV"])
+_TAB_LABELS = ["🌱 Auto-generate", "📂 Upload CSV"]
+try:
+    # key= keeps the chosen tab across reruns; otherwise Import's rerun jumps back to the first tab
+    tab_auto, tab_upload = st.tabs(_TAB_LABELS, key="seed_tabs")
+except TypeError:  # older Streamlit without tabs(key=)
+    tab_auto, tab_upload = st.tabs(_TAB_LABELS)
 
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_auto:
@@ -307,10 +312,16 @@ stem,key,topic,difficulty,solution_steps
     if _msg := st.session_state.pop("upload_import_msg", None):
         st.success(_msg)
 
+    # While an import runs the controls are locked, so a second click or a file swap
+    # cannot interrupt it (Streamlit reruns the script on every interaction).
+    _importing = st.session_state.get("seed_importing", False)
+
     uploaded_file = st.file_uploader(
         "Upload questions (.csv or .jsonl)",
         type=["csv", "jsonl"],
         help="Required: stem, key. Optional: topic, difficulty, solution_steps, numeric, split",
+        key="seed_upload",
+        disabled=_importing,
     )
 
     if uploaded_file is not None:
@@ -436,6 +447,8 @@ stem,key,topic,difficulty,solution_steps
                 "Import only a random sample",
                 value=False,
                 help="Useful for quick experiments without importing the full dataset.",
+                key="seed_use_sample",
+                disabled=_importing,
             )
             if use_sample:
                 sample_n = st.slider(
@@ -443,6 +456,8 @@ stem,key,topic,difficulty,solution_steps
                     min_value=1,
                     max_value=len(base_rows),
                     value=min(20, len(base_rows)),
+                    key="seed_sample_n",
+                    disabled=_importing,
                 )
                 import random as _rng
                 _seed_rows = _rng.Random(42).sample(base_rows, sample_n)
@@ -454,6 +469,8 @@ stem,key,topic,difficulty,solution_steps
                 "Replace existing uploaded questions with same id",
                 value=False,
                 help="If unchecked, already-existing rows are silently skipped.",
+                key="seed_replace",
+                disabled=_importing,
             )
 
             # ── Optional LLM labels for missing topic / difficulty ────────
@@ -474,7 +491,8 @@ stem,key,topic,difficulty,solution_steps
                     f"Label missing topic / difficulty with the LLM "
                     f"({n_no_topic} without topic, {n_no_level} without difficulty)",
                     value=can_label,
-                    disabled=not can_label,
+                    key="seed_use_labels",
+                    disabled=(not can_label) or _importing,
                     help=(
                         f"Uses the judge model ({_judge.id if _judge else 'none configured'}), about "
                         f"{labeling.n_calls(_label_rows)} call(s) of {labeling.BATCH_SIZE} questions. "
@@ -485,7 +503,19 @@ stem,key,topic,difficulty,solution_steps
                 if not can_label:
                     st.caption("LLM labelling needs a judge model in `models.yaml` and `OPENROUTER_API_KEY`.")
 
-            if st.button("⬆ Import into database", type="primary", disabled=(role != "Organizer")):
+            if st.button(
+                "⬆ Import into database", type="primary",
+                disabled=(role != "Organizer") or _importing,
+            ):
+                st.session_state["seed_importing"] = True
+                st.rerun()  # redraw with every control disabled before the work starts
+
+            if _importing:
+                st.info("Importing… the controls are locked until this finishes. "
+                        "Keep this page open.")
+                # Clear the flag first: this run still draws every control disabled, and an
+                # error or a refresh can then never leave the page locked.
+                st.session_state["seed_importing"] = False
                 label_note = ""
                 if use_labels:
                     known = sorted(
