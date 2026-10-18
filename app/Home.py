@@ -86,6 +86,14 @@ h3 { color: #9B97B8 !important; font-weight: 600; font-size: 0.72rem !important;
     border-color: #C96FFF; color: #fff; box-shadow: 0 0 10px rgba(201,111,255,0.25);
 }
 
+/* ── Never cut off button text ── */
+.stButton > button, .stDownloadButton > button, [data-testid^="stBaseButton"] {
+    height: auto !important; min-height: 2.5rem; white-space: normal !important; overflow: visible !important; line-height: 1.3;
+}
+.stButton > button p, .stDownloadButton > button p, [data-testid^="stBaseButton"] p {
+    white-space: normal !important; overflow: visible !important; text-overflow: clip !important; overflow-wrap: break-word;
+}
+
 /* ── Progress bar ── */
 [data-testid="stProgressBar"] > div {
     background: linear-gradient(90deg, #FF6B2B, #C96FFF) !important;
@@ -139,7 +147,7 @@ hr { border-color: #2D2D55; }
 .nav-bar { display:flex;align-items:center;justify-content:space-between;
            padding:0 0 16px 0;border-bottom:1px solid #2D2D55;margin-bottom:32px; }
 .nav-links { display:flex;gap:0; }
-a.nav-link { display:inline-block;padding:8px 20px;color:#EDE8DC!important;font-size:.88rem;
+a.nav-link { display:inline-block;white-space:nowrap;padding:8px clamp(8px,1.3vw,20px);color:#EDE8DC!important;font-size:.88rem;
             font-weight:500;text-decoration:none!important;border-bottom:2px solid transparent;
             transition:all .15s;letter-spacing:.01em;outline:none; }
 a.nav-link:hover { color:#FF8F5C!important;border-bottom-color:#FF6B2B; }
