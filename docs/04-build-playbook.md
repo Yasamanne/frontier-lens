@@ -1,6 +1,6 @@
 # Build playbook
 
-Work only in `/Users/yasamanemami/Documents/GitHub/frontier-lens`. Branch `master`. Do not clone again.
+Work only in `/Users/yasamanemami/Documents/GitHub/frontier-lens`. Branch `main`. Do not clone again.
 
 1. Design docs (this folder) — commit `docs: vision, prior-art survey, item design, roster, and experiment design`
 2. `uv` project, `.gitignore`, LICENSE, SQLite schema, sandbox — commit `chore: uv project, SQLite schema, and sandboxed executor`
@@ -13,4 +13,4 @@ Work only in `/Users/yasamanemami/Documents/GitHub/frontier-lens`. Branch `maste
 9. Tests + light CI — commit `test: parser, sandbox rejections, key re-execution, CI math, promotion gate; light CI`
 10. README experiment numbers, licenses, screenshots — commit `docs: README experiment numbers, roster and licenses, prior art, screenshots`
 
-Push: `git push -u origin master`.
+Push: `git push -u origin main`.
