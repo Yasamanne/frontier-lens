@@ -13,6 +13,7 @@ from frontier_lens.templates import all_specs
 
 from .candidates import _store_candidate
 from .prompts import ONE_SHOT_EVAL, ONE_SHOT_TRAIN
+from .utils import generator_kwargs
 
 
 def _eval_cells() -> list[tuple[str, str]]:
@@ -71,7 +72,9 @@ def propose_one_shot(
         for i in range(n):
             topic, band = cells[i % len(cells)]
             prompt = ONE_SHOT_EVAL.format(topic=topic, band=band)
-            completion = provider.complete(prompt, gen.model, skip_correction=True)
+            completion = provider.complete(
+                prompt, gen.model, skip_correction=True, **generator_kwargs(gen)
+            )
             cid = _store_candidate(
                 completion.text,
                 topic,
@@ -96,7 +99,9 @@ def propose_one_shot(
             topic=cell.topic, band=cell.band, failures=fails, failure_analysis=fa_text,
             sme_feedback=sme_feedback,
         )
-        completion = provider.complete(prompt, gen.model, skip_correction=True)
+        completion = provider.complete(
+            prompt, gen.model, skip_correction=True, **generator_kwargs(gen)
+        )
         cid = _store_candidate(
             completion.text,
             cell.topic,

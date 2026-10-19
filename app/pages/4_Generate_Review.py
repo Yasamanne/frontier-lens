@@ -57,6 +57,7 @@ engine = get_engine()
 from frontier_lens import job_panel, jobs
 from frontier_lens.failure_analysis import rl_suitable_questions, zero_pass_questions
 from frontier_lens.feedback import REASONS
+from frontier_lens.generate.utils import reason_label
 from frontier_lens.feedback import context_for as sme_feedback_for
 
 # ── Run / model selectors ─────────────────────────────────────────────────
@@ -180,7 +181,7 @@ def _render_augment_results(row: dict) -> None:
     st.dataframe(
         [{"source_id": r["source_id"][:14], "candidate_id": r["candidate_id"],
           "status": r["status"],
-          "reason": r.get("reason") or "—",
+          "reason": reason_label(r.get("reason"), r.get("pass_rate")),
           "pass_rate": round(r["pass_rate"], 3) if r["pass_rate"] is not None else None}
          for r in results],
         width="stretch",

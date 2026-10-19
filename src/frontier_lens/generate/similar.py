@@ -28,9 +28,16 @@ from .prompts import (
     SIMILAR_QUESTION_PROMPT,
     SIMILAR_REVIEW_PROMPT,
     SIMILAR_TUNE_EASIER_MESSAGE,
+    SIMILAR_TUNE_ESCALATION,
     SIMILAR_TUNE_HARDER_MESSAGE,
 )
-from .utils import _extract_json, _extract_stem_from_raw, _label_or_infer
+from .utils import (
+    _extract_json,
+    _extract_stem_from_raw,
+    _label_or_infer,
+    generator_extra_body,
+    generator_kwargs,
+)
 
 
 def _similar_agent_tools() -> list[dict]:
@@ -138,6 +145,7 @@ def _run_similar_agent(
                     messages=messages,
                     tools=toolset,
                     timeout=120,
+                    extra_body=generator_extra_body(gen),
                 )
         except Exception as exc:
             _log("agent_error", step=step + 1, error=str(exc))
@@ -292,7 +300,9 @@ def generate_similar_questions(
             prior_variants="(one-shot mode — no prior variants tracked)",
             sme_feedback=sme_feedback_for(q.get("topic"), source_id=q["id"]),
         )
-        completion = provider.complete(prompt, gen.model, skip_correction=True)
+        completion = provider.complete(
+            prompt, gen.model, skip_correction=True, **generator_kwargs(gen)
+        )
 
         def _cal_log(event: str, _sid=q["id"], _att=attempt, **fields):
             _log(event, source_id=_sid, attempt=_att, **fields)
@@ -577,7 +587,9 @@ def generate_similar_with_review(
                          score=review_result.get("score"),
                          issues=review_result.get("issues", []))
 
-                completion = gen_provider.complete(prompt, gen.model, skip_correction=True)
+                completion = gen_provider.complete(
+                    prompt, gen.model, skip_correction=True, **generator_kwargs(gen)
+                )
                 current_raw = completion.text
 
                 # Sandbox check
@@ -763,18 +775,20 @@ def _agent_draft(
     """Run up to *max_loops* tool rounds; return the arguments of ``submit_draft`` or None.
 
     *messages* is extended in place, so the next call continues the same conversation. The
-    last round asks for ``submit_draft`` (``tool_choice``); providers do not always honour
-    that, so if no draft arrives (all rounds spent on tests, or a reply without a tool call)
-    one extra call nudges the agent to submit what it has.
+    last round offers only ``submit_draft`` (and sets ``tool_choice``, which not every model
+    honours). If no draft arrives (all rounds spent on tests, or a reply without a tool call)
+    one extra call, again with only ``submit_draft`` on offer, nudges the agent to submit.
     """
     from frontier_lens.agent.tools import handle
 
     force_submit = {"tool_choice": {"type": "function", "function": {"name": "submit_draft"}}}
+    submit_only = [_SUBMIT_DRAFT_TOOL]
 
-    def call_model(extra: dict):
+    def call_model(extra: dict, tools: list[dict]):
         with call_slot():
             return client.chat.completions.create(
-                model=gen.model, messages=messages, tools=toolset, timeout=120, **extra,
+                model=gen.model, messages=messages, tools=tools, timeout=120,
+                extra_body=generator_extra_body(gen), **extra,
             )
 
     def run_tool_calls(msg, step: int) -> dict | None:
@@ -803,7 +817,10 @@ def _agent_draft(
 
     for step in range(max_loops):
         try:
-            resp = call_model(force_submit if step == max_loops - 1 else {})
+            # Last round: only submit_draft is on offer (tool_choice alone is not honoured by
+            # every model), so the agent cannot spend it on another test.
+            resp = call_model(*((force_submit, submit_only) if step == max_loops - 1
+                                else ({}, toolset)))
         except Exception as exc:
             log_fn("agent_error", step=step + 1, error=str(exc))
             return None
@@ -821,7 +838,7 @@ def _agent_draft(
     messages.append({"role": "user", "content": "Submit your final draft now by calling "
                      "submit_draft with stem, lang, code, topic and band."})
     try:
-        msg = call_model(force_submit).choices[0].message
+        msg = call_model(force_submit, submit_only).choices[0].message
     except Exception as exc:
         log_fn("agent_error", step=max_loops + 1, error=str(exc))
         return None
@@ -865,17 +882,44 @@ def _policy_weakness_text(run_id: str | None, seed: dict) -> str:
     return "\n".join(lines) or "(no data on this seed)"
 
 
-def _tune_message(stats: dict, key: str) -> str:
-    """The calibration result as feedback: too easy asks for harder, never solved asks for a check."""
+def _history_text(history: list[dict]) -> str:
+    """Every draft of this variant so far, with how many policy samples solved it."""
+    return "\n".join(
+        f"  {i}. solved {h['correct']}/{h['n']}: {' '.join(h['stem'].split())[:170]}"
+        for i, h in enumerate(history, start=1)
+    )
+
+
+def _correct_trace(stats: dict, limit: int = 900) -> str:
+    """The shortest correct reply of the policy, shortened (it shows the approach that works)."""
+    correct = [r["raw"] for r in stats.get("responses", []) if r.get("is_correct") and r.get("raw")]
+    if not correct:
+        return "(not available)"
+    trace = min(correct, key=len).strip()
+    if len(trace) > limit:
+        trace = trace[: limit * 2 // 3] + "\n[...]\n" + trace[-limit // 3:]
+    return trace
+
+
+def _tune_message(stats: dict, key: str, history: list[dict]) -> str:
+    """The calibration result as feedback.
+
+    Solved every time: the drafts so far, how the policy solved the latest one, and (after
+    repeated failures) a demand for a substantial change. Never solved: the policy's answers
+    and a request to check the question, then aim between the drafts so far.
+    """
     n = stats["n"]
     if stats["correct"] >= n:  # solved every time
+        n_easy = sum(1 for h in history if h["correct"] >= h["n"])
         return SIMILAR_TUNE_HARDER_MESSAGE.format(
             correct=stats["correct"], n=n, rate=stats["pass_rate"],
+            history=_history_text(history), trace=_correct_trace(stats),
+            escalation=SIMILAR_TUNE_ESCALATION.format(n_easy=n_easy) if n_easy >= 2 else "",
             hardening_levers=HARDENING_LEVERS,
         )
     answers = Counter(r["parsed"] or "(none)" for r in stats.get("responses", []))
     return SIMILAR_TUNE_EASIER_MESSAGE.format(
-        n=n, key=key,
+        n=n, key=key, history=_history_text(history),
         policy_answers=", ".join(f"{a} (x{c})" for a, c in answers.most_common(4)) or "(none)",
     )
 
@@ -1072,6 +1116,7 @@ def generate_similar_react_review(
             status, rate, reject_reason = "review_failed", None, None
             review_result: dict = {}
             last_calibrated: tuple[dict, dict] | None = None  # (draft, stats) of the latest round
+            history: list[dict] = []  # every calibrated draft of this variant
             for tune_round in range(max_tune_rounds + 1):
                 draft, review_result, passed, key = draft_and_review()
                 if not passed or not draft:
@@ -1094,9 +1139,11 @@ def generate_similar_react_review(
                      pass_rate=stats["pass_rate"], n_correct=stats["correct"], n=stats["n"],
                      in_band=stats["in_learnable_band"])
                 last_calibrated = (draft, stats)
+                history.append({"stem": draft["stem"], "correct": stats["correct"], "n": stats["n"]})
                 last_round = tune_round == max_tune_rounds
                 if not stats["in_learnable_band"] and not last_round:
-                    messages.append({"role": "user", "content": _tune_message(stats, key)})
+                    messages.append(
+                        {"role": "user", "content": _tune_message(stats, key, history)})
                     continue
                 cid, status, rate, reject_reason = store(draft, stats)
                 break

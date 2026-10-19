@@ -56,3 +56,33 @@ def _extract_stem_from_raw(raw: str) -> str:
         return _extract_json(raw).get("stem", raw[:400])
     except Exception:
         return raw[:400]
+
+
+def reason_label(reason: str | None, pass_rate: float | None) -> str:
+    """Plain wording for a reject reason.
+
+    ``out_of_band`` is about the policy's pass rate (always or never solved), not about how
+    the candidate compares with its seed.
+    """
+    if reason == "out_of_band":
+        if pass_rate is not None and pass_rate >= 1:
+            return "too easy: the policy solved every sample"
+        if pass_rate is not None and pass_rate <= 0:
+            return "never solved: the policy got no sample right"
+        return "out of the learnable band"
+    return reason or "—"
+
+
+def generator_extra_body(gen) -> dict:
+    """OpenRouter request switch that applies the generator's ``thinking`` setting.
+
+    ``thinking: true`` turns reasoning on and ``false`` turns it off. Without an explicit
+    switch the model's own default applies (some models think, some do not), so the
+    ``thinking`` flag in models.yaml would have no effect.
+    """
+    return {"reasoning": {"enabled": bool(getattr(gen, "thinking", False))}}
+
+
+def generator_kwargs(gen) -> dict:
+    """Keyword arguments for ``provider.complete`` that apply the generator's thinking setting."""
+    return {"thinking": bool(getattr(gen, "thinking", False)), "extra_body": generator_extra_body(gen)}

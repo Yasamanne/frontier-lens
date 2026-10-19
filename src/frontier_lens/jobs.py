@@ -27,6 +27,7 @@ from sqlalchemy import text
 from frontier_lens import runstate
 from frontier_lens.config import LOGS_DIR
 from frontier_lens.db import get_engine
+from frontier_lens.generate.utils import reason_label
 from frontier_lens.runlog import write_op_event
 
 TABLE = "op_jobs"
@@ -191,7 +192,10 @@ def format_augment_event(event: str, **f) -> str:
         rate_str = f"{rate:.2f}" if rate is not None else "n/a"
         icon = "✅" if f.get("status") == "pending" else "❌"
         rev = f" [review={f.get('review_score')}]" if f.get("review_score") else ""
-        return f"  {icon} cand={f.get('candidate_id', '?')} status={f.get('status')} pass_rate={rate_str}{rev}"
+        why = (f" ({reason_label(f.get('auto_reject_reason'), rate)})"
+               if f.get("auto_reject_reason") else "")
+        return (f"  {icon} cand={f.get('candidate_id', '?')} status={f.get('status')} "
+                f"pass_rate={rate_str}{rev}{why}")
     if event == "tune_result":
         verdict = "in band ✓" if f.get("in_band") else "out of band, asking the agent to retune"
         return (f"  🎯 calibration (round {f.get('round', 0)}): {f.get('n_correct')}/{f.get('n')} "

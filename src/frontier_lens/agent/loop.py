@@ -9,6 +9,7 @@ from frontier_lens.agent.budget import MAX_STEPS
 from frontier_lens.agent.tools import handle, tools_for
 from frontier_lens.feedback import context_for as sme_feedback_for
 from frontier_lens.generate import _eval_cells
+from frontier_lens.generate.utils import generator_extra_body
 from frontier_lens.heatmap import weakest_cell
 from frontier_lens.registry import sync_models
 
@@ -60,7 +61,8 @@ def propose_agent(
         ]
         for _step in range(MAX_STEPS):
             resp = client.chat.completions.create(
-                model=gen.model, messages=messages, tools=toolset
+                model=gen.model, messages=messages, tools=toolset,
+                extra_body=generator_extra_body(gen),
             )
             msg = resp.choices[0].message
             if not msg.tool_calls:

@@ -14,7 +14,7 @@ from frontier_lens.registry import sync_models
 from .calibration import _calibrate_collect
 from .candidates import _store_hinted_candidate
 from .prompts import _LEVEL_INSTRUCTIONS, PROGRESSIVE_HINT_PROMPT
-from .utils import _extract_json
+from .utils import _extract_json, generator_kwargs
 
 
 def rescue_with_hints(
@@ -136,7 +136,9 @@ def rescue_with_hints(
                 level_instruction=level_instr,
                 sme_feedback=hint_feedback,
             )
-            completion = provider.complete(prompt, gen.model, skip_correction=True)
+            completion = provider.complete(
+                prompt, gen.model, skip_correction=True, **generator_kwargs(gen)
+            )
 
             hint_text = ""
             hinted_stem = current_stem

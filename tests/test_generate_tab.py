@@ -378,6 +378,9 @@ def test_react_review_forces_submit_draft_on_the_last_round(monkeypatch):
     assert [r["status"] for r in results] == ["pending"]
     assert ["tool_choice" in kw for kw in client.kwargs] == [False, False, True]
     assert client.kwargs[2]["tool_choice"]["function"]["name"] == "submit_draft"
+    names = [[t["function"]["name"] for t in kw["tools"]] for kw in client.kwargs]
+    assert names[0] == ["run_snippet", "check_similarity", "submit_draft"]
+    assert names[2] == ["submit_draft"]       # the last round offers nothing else
 
 
 def test_generation_prompts_are_not_limited_to_coding_topics():
@@ -403,8 +406,12 @@ def test_too_easy_draft_is_sent_back_for_a_harder_version(monkeypatch):
     assert [(r["status"], r["pass_rate"]) for r in results] == [("pending", 0.5)]
     assert [c["stem"] for c in _candidates()] == ["harder stem"]   # the easy draft is not stored
     tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
-    assert "solved your question 2/2 times" in tune["content"] and "too easy" in tune["content"]
-    assert "enlarge the input" in tune["content"]                   # the hardening levers
+    assert "solved your latest draft 2/2 times" in tune["content"] and "TOO EASY" in tune["content"]
+    assert "1. solved 2/2: easy stem" in tune["content"]            # the drafts so far
+    assert "HOW THE POLICY SOLVED YOUR LATEST DRAFT" in tune["content"]
+    assert "FINAL: 4" in tune["content"]                            # one correct policy reply
+    assert "LONG EXACT COMPUTATION" in tune["content"]              # the strongest hardening lever
+    assert "Small tweaks have not worked" not in tune["content"]    # only after repeated failures
 
 
 def test_last_draft_is_stored_as_out_of_band_when_tuning_runs_out(monkeypatch):
@@ -424,8 +431,9 @@ def test_never_solved_draft_asks_the_agent_to_check_the_question_first(monkeypat
         rounds, [90, 90], monkeypatch, replies=replies, max_tune_rounds=1)
     assert [r["status"] for r in results] == ["pending"]
     tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
-    assert "0/2 times" in tune["content"] and "9 (x2)" in tune["content"]
+    assert "latest draft 0/2 times" in tune["content"] and "9 (x2)" in tune["content"]
     assert "Your code computed: 4" in tune["content"] and "ask exactly what the code" in tune["content"]
+    assert "aim BETWEEN" in tune["content"] and "1. solved 0/2: hard stem" in tune["content"]
 
 
 def test_no_tuning_rounds_means_an_out_of_band_draft_is_just_rejected(monkeypatch):
@@ -459,7 +467,7 @@ def test_agent_prompt_describes_how_the_policy_behaves_on_the_seed(monkeypatch):
     assert "answered correctly 1/3 times" in prompt
     assert "6 (x2)" in prompt
     assert "Policy failure analysis" in prompt          # the failure mode of the seed's cell
-    assert "pass rate\nstrictly between 0 and 1" in prompt and "enlarge the input" in prompt
+    assert "pass rate\nstrictly between 0 and 1" in prompt and "LONG EXACT COMPUTATION" in prompt
 
 
 def test_precomputed_calibration_is_not_repeated():
@@ -496,6 +504,7 @@ def test_agent_that_spends_every_round_testing_gets_one_last_chance_to_submit(mo
     assert [r["status"] for r in results] == ["pending"]
     assert [c["stem"] for c in _candidates()] == ["late stem"]
     assert len(client.seen) == 4
+    assert [t["function"]["name"] for t in client.kwargs[3]["tools"]] == ["submit_draft"]
     nudge = [m for m in client.seen[3] if isinstance(m, dict) and m.get("role") == "user"][-1]
     assert "Submit your final draft now" in nudge["content"]
     assert client.kwargs[3]["tool_choice"]["function"]["name"] == "submit_draft"
@@ -566,3 +575,65 @@ def test_a_harder_variant_is_not_failed_for_its_difficulty(monkeypatch):
         _judge_provider=_StubReviewer({"score": 88, "passed": False, "issues": []}),
     )
     assert [r["status"] for r in results] == ["pending"]
+
+
+def test_repeated_easy_drafts_trigger_a_demand_for_a_substantial_change(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("variant A"))],
+              [_call("2", "submit_draft", _draft("variant B"))],
+              [_call("3", "submit_draft", _draft("variant C"))]]
+    results, client, _ = _run_react_review(
+        rounds, [90, 90, 90], monkeypatch, replies=["FINAL: 4"] * 6, max_tune_rounds=2)
+    assert [r["status"] for r in results] == ["auto_rejected"]
+    first = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    third = [m for m in client.seen[2] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "Small tweaks" not in first["content"]
+    assert "Small tweaks have not worked: 2 draft(s) in a row" in third["content"]
+    assert "1. solved 2/2: variant A" in third["content"] and "2. solved 2/2: variant B" in third["content"]
+    assert "Do NOT reuse the structure" in third["content"]
+
+
+# ── out_of_band wording, and the option to keep such candidates for the SME ──
+
+def test_out_of_band_is_explained_as_pass_rate_not_as_a_mismatch_with_the_seed():
+    from frontier_lens.generate.utils import reason_label
+
+    assert reason_label("out_of_band", 1.0).startswith("too easy")
+    assert reason_label("out_of_band", 0.0).startswith("never solved")
+    assert reason_label("out_of_band", None) == "out of the learnable band"
+    assert reason_label("unsafe", None) == "unsafe" and reason_label(None, 0.5) == "—"
+
+
+def test_job_log_names_the_reason_in_plain_words():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event(
+        "similar_result", candidate_id="c1", status="auto_rejected", pass_rate=1.0,
+        auto_reject_reason="out_of_band")
+    assert "too easy: the policy solved every sample" in line
+
+
+# ── the generator model and its thinking setting ────────────────────────
+
+def test_generator_is_gemma_31b_with_thinking_on():
+    from frontier_lens.registry import load_yaml
+
+    gen = next(m for m in load_yaml() if m.role == "generator")
+    assert (gen.model, gen.family, gen.thinking) == ("google/gemma-4-31b-it", "gemma", True)
+
+
+def test_generator_thinking_flag_becomes_an_explicit_reasoning_switch():
+    from frontier_lens.generate.utils import generator_extra_body, generator_kwargs
+
+    on, off = NS(thinking=True), NS(thinking=False)
+    assert generator_extra_body(on) == {"reasoning": {"enabled": True}}
+    assert generator_extra_body(off) == {"reasoning": {"enabled": False}}
+    assert generator_kwargs(on) == {"thinking": True, "extra_body": {"reasoning": {"enabled": True}}}
+    assert generator_kwargs(off)["thinking"] is False
+
+
+def test_every_agent_call_carries_the_generators_reasoning_switch(monkeypatch):
+    rounds = [[_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+              [_call("2", "submit_draft", _draft())]]
+    _, client, _ = _run_react_review(rounds, [90], monkeypatch)
+    assert client.kwargs and all(
+        kw["extra_body"] == {"reasoning": {"enabled": True}} for kw in client.kwargs)

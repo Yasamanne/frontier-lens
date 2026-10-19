@@ -106,10 +106,10 @@ All open-weight, called through [OpenRouter](https://openrouter.ai) with one Ope
 |---|---|
 | Policy | Gemma 4 26B-A4B (`google/gemma-4-26b-a4b-it`) |
 | References | Gemma 4 31B, Qwen 3.8 27B, DeepSeek V4.1 Flash, Llama 4 Scout |
-| Generator | DeepSeek V4.1 Flash |
+| Generator | Gemma 4 31B, thinking on |
 | Judge | DeepSeek V4.1 Flash |
 
-The generator and judge share a family with one reference. This is allowed with a warning; see Limitations.
+The generator shares a family with the policy, and the judge with one reference. This is allowed with a warning; see Limitations.
 
 ## Key design decisions
 
@@ -142,7 +142,7 @@ The generator and judge share a family with one reference. This is allowed with 
 ## Changes of direction
 
 - **Local Ollama (Q4 GGUF) → hosted OpenRouter.** Consistent results across machines and no local GPU. Gemma 4 e4b is not hosted, so the policy became Gemma 4 26B-A4B.
-- **GLM generator → DeepSeek V4.1 Flash.** The rule that the generator family must be disjoint from the evaluated models was relaxed to a warning.
+- **GLM generator → DeepSeek V4.1 Flash → Gemma 4 31B (thinking on).** The rule that the generator family must be disjoint from the evaluated models was relaxed to a warning.
 - **Review every item → sampled audit.** The Wilson upper bound decides whether a batch passes.
 - **Item-level holdout → template-level holdout.** Item-level holdout leaked templates into eval.
 - **Hand-written Python "gotchas" → procedural generators.** Difficulty now comes from step length and state, not tricks (`docs/known-gotchas.md`). The topics grew from 4 to 7.

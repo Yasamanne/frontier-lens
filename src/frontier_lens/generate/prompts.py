@@ -333,30 +333,48 @@ it with run_snippet, then call submit_draft again.
 
 
 HARDENING_LEVERS = """\
+  - MAKE THE ANSWER NEED A LONG EXACT COMPUTATION: large bounds, a long recurrence, many cases
+    to count. Your code does it instantly; a solver reasoning without tools makes slips. This
+    is the strongest lever. Prefer it to questions about qualitative properties whose answer
+    is a small set or a famous fact that can be guessed or recalled
   - add one more constraint or condition the solver has to keep track of
-  - add reasoning steps: make the answer depend on a longer chain
-  - combine two ideas from the topic in one question
-  - enlarge the input or the bounds (your code still computes it exactly; by hand it gets error-prone)
+  - combine two different ideas from the topic in one question
   - add boundary cases, off-by-one traps or a rare special case
-  - add realistic distractor details that do not change the answer
-  - replace a closed-form shortcut with a case analysis"""
+  - replace a closed-form shortcut with a case analysis
+  - add realistic distractor details that do not change the answer"""
 
 SIMILAR_TUNE_HARDER_MESSAGE = """\
-CALIBRATION RESULT: the policy model solved your question {correct}/{n} times (pass rate \
-{rate:.2f}). It is too easy: RL needs questions the policy solves sometimes but not always.
+CALIBRATION RESULT: the policy model solved your latest draft {correct}/{n} times (pass rate \
+{rate:.2f}). It is TOO EASY: RL needs questions the policy solves sometimes but not always.
 
-Make a HARDER version that still has exactly one unambiguous answer. Ways to raise difficulty:
+YOUR DRAFTS SO FAR AND HOW THE POLICY DID:
+{history}
+
+HOW THE POLICY SOLVED YOUR LATEST DRAFT (one of its correct replies, shortened):
+{trace}
+{escalation}
+Design the next question so that this kind of reasoning no longer works, and give it exactly \
+one unambiguous answer. Ways to raise difficulty:
 {hardening_levers}
-Keep what makes the question clear and change only what raises difficulty. Test the new code \
-with run_snippet, then call submit_draft again.
+Test the new code with run_snippet, then call submit_draft again.
+"""
+
+SIMILAR_TUNE_ESCALATION = """\
+Small tweaks have not worked: {n_easy} draft(s) in a row were solved every time. Do NOT reuse \
+the structure of those drafts. Make a substantial change in the TYPE of reasoning the question \
+needs, and make the computation much longer or larger, not slightly different.
 """
 
 SIMILAR_TUNE_EASIER_MESSAGE = """\
-CALIBRATION RESULT: the policy model solved your question 0/{n} times. Its answers were: \
+CALIBRATION RESULT: the policy model solved your latest draft 0/{n} times. Its answers were: \
 {policy_answers}. Your code computed: {key}.
+
+YOUR DRAFTS SO FAR AND HOW THE POLICY DID:
+{history}
 
 First check that the question is correct: does the stem ask exactly what the code computes, \
 with one unambiguous answer? If something is wrong, fix it. If it is correct but simply too \
-hard, make an EASIER version: fewer steps or constraints, a smaller input, or remove a trap. \
+hard, aim BETWEEN your drafts: easier than this one, harder than the ones the policy solved \
+every time (fewer steps or constraints, a smaller input, or remove a trap). \
 Test the new code with run_snippet, then call submit_draft again.
 """
