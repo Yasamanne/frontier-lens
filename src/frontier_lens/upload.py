@@ -247,7 +247,10 @@ def validate(data: bytes, filename: str) -> ValidationResult:
 
     # File size
     if len(data) > MAX_FILE_BYTES:
-        result.errors.append(f"File too large ({len(data) // 1024} KB). Max is {MAX_FILE_BYTES // 1024} KB.")
+        result.errors.append(
+            f"File too large ({len(data) / 1048576:.1f} MB). "
+            f"The maximum is {MAX_FILE_BYTES // 1048576} MB; split the file and upload it in parts."
+        )
         return result
 
     # Parse
@@ -348,6 +351,17 @@ def validate(data: bytes, filename: str) -> ValidationResult:
 
 
 # ── Import ────────────────────────────────────────────────────────────────
+
+def friendly_db_error(exc: Exception) -> str:
+    """Plain-language message for a database failure during an import."""
+    text_ = str(exc).lower()
+    if "locked" in text_ or "busy" in text_:
+        return ("The database is busy: another job is writing to it. "
+                "Wait a moment and import again; nothing was saved.")
+    if "full" in text_ or "disk" in text_:
+        return "The database could not be written because the disk is full. Free up space and retry."
+    return "The import could not be saved because of a database error. Nothing was lost; try again."
+
 
 def import_rows(rows: list[dict], replace: bool = False, filename: str | None = None) -> int:
     """Insert validated rows into questions table. Returns number of new rows inserted."""
