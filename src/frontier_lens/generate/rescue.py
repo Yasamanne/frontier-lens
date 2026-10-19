@@ -11,7 +11,7 @@ from frontier_lens.parallel import map_with_events
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
 from frontier_lens.registry import sync_models
 
-from .calibration import _calibrate_collect
+from .calibration import _calibrate_collect, calibrating_with
 from .candidates import _store_hinted_candidate
 from .prompts import _LEVEL_INSTRUCTIONS, PROGRESSIVE_HINT_PROMPT
 from .utils import _extract_json, generator_kwargs, generator_timeout
@@ -122,7 +122,7 @@ def hint_ladder(
     }
 
 
-def rescue_with_hints(
+def _rescue_with_hints(
     run_id: str,
     model_id: str,
     question_ids: list[str],
@@ -276,6 +276,12 @@ def rescue_with_hints(
     _log("rescue_end", n_total=len(question_ids),
          n_rescued=n_rescued, n_rejected=len(question_ids) - n_rescued)
     return results
+
+
+def rescue_with_hints(run_id: str, model_id: str, question_ids: list[str], **kwargs) -> list[dict]:
+    """Rescue pass@k=0 questions, calibrating every hint level on *model_id*; see ``_rescue_with_hints``."""
+    with calibrating_with(model_id):
+        return _rescue_with_hints(run_id, model_id, question_ids, **kwargs)
 
 
 def generate_rescue_sft_csv(results: list[dict]) -> str:
