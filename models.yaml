@@ -28,6 +28,19 @@
   quant: host
   thinking: false
   license: Apache-2.0 / Gemma Terms of Use (check model card)
+- id: gemma2-27b
+  role: reference
+  family: gemma
+  provider: openai_compatible
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: google/gemma-2-27b-it
+  quant: host
+  thinking: false
+  # Its context window is only 8,192 tokens (prompt and reply together), so the output cap
+  # stays well below the 16,000 used for the policy.
+  max_tokens: 4096
+  license: Gemma Terms of Use (check model card)
 - id: qwen3.8-27b
   role: reference
   family: qwen

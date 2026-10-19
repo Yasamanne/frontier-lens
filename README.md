@@ -105,7 +105,7 @@ All open-weight, called through [OpenRouter](https://openrouter.ai) with one Ope
 | Role | Model |
 |---|---|
 | Policy | Gemma 4 26B-A4B (`google/gemma-4-26b-a4b-it`) |
-| References | Gemma 4 31B, Qwen 3.8 27B, DeepSeek V4.1 Flash, Llama 4 Scout |
+| References | Gemma 4 31B, Gemma 2 27B, Qwen 3.8 27B, DeepSeek V4.1 Flash, Llama 4 Scout |
 | Generator | Gemma 4 31B, thinking on |
 | Judge | DeepSeek V4.1 Flash |
 
