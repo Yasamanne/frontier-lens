@@ -46,10 +46,7 @@ from sqlalchemy import text
 
 from frontier_lens.db import get_engine
 from frontier_lens.registry import policy_spec
-from frontier_lens.review import (
-    flag_suspicious,
-    promote,
-)
+from frontier_lens.review import promote
 
 st.title("Generate")
 engine = get_engine()
@@ -89,32 +86,6 @@ if not _all_models:
 _pol_id   = policy_spec().id
 _def_mi   = list(_all_models).index(_pol_id) if _pol_id in list(_all_models) else 0
 _model_id = st.selectbox("Model", list(_all_models), index=_def_mi, key="gen_model_sel2")
-
-st.divider()
-st.subheader("⚙ Suspicious correct policy samples")
-if role in {"Organizer", "SME"}:
-    with engine.connect() as conn:
-        runs = conn.execute(
-            text("SELECT id FROM eval_runs WHERE status='complete' ORDER BY created_at DESC")
-        ).scalars().all()
-    run_id = st.selectbox("Run to scan", runs, key="sus-run") if runs else None
-    if run_id and st.button("Flag suspicious correct traces"):
-        n = flag_suspicious(run_id, policy_spec().id)
-        st.success(f"queued {n} traces")
-with engine.connect() as conn:
-    sus = conn.execute(
-        text(
-            """
-            SELECT id, question_id, sample_index, reason, status, raw_output
-            FROM suspicious_samples ORDER BY id DESC LIMIT 20
-            """
-        )
-    ).mappings().all()
-if not sus:
-    st.caption("Empty. Flag after a policy contest run.")
-for s in sus:
-    with st.expander(f"{s['question_id']} k={s['sample_index']} {s['reason']} {s['status']}"):
-        st.code((s["raw_output"] or "")[:2000])
 
 # ── Background jobs (rescue / augmentation) ───────────────────────────────
 # Both run in a detached process (frontier_lens.jobs) and save each finished
