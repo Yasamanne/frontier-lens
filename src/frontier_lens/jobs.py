@@ -282,6 +282,7 @@ def _log_fn(job_id: str, fmt: Callable[..., str], on_event: Callable[..., bool])
 
 def _run_rescue(job_id: str, cfg: dict, res: _Results) -> None:
     from frontier_lens.generate import rescue_with_hints
+    from frontier_lens.generate.calibration import calibrating_with
 
     finished = {r["question_id"] for r in res.items} | {r["question_id"] for r in res.skipped}
     todo = [qid for qid in cfg["question_ids"] if qid not in finished]
@@ -297,11 +298,12 @@ def _run_rescue(job_id: str, cfg: dict, res: _Results) -> None:
                     skipped=True)
         return False
 
-    rescue_with_hints(
-        cfg["run_id"], cfg["model_id"], todo,
-        log_fn=_log_fn(job_id, format_rescue_event, on_event),
-        calibration_k=cfg["calibration_k"], max_hints=cfg["max_hints"],
-    )
+    with calibrating_with(cfg["model_id"]):
+        rescue_with_hints(
+            cfg["run_id"], cfg["model_id"], todo,
+            log_fn=_log_fn(job_id, format_rescue_event, on_event),
+            calibration_k=cfg["calibration_k"], max_hints=cfg["max_hints"],
+        )
 
 
 def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
@@ -311,6 +313,7 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
         generate_similar_react_review,
         generate_similar_with_review,
     )
+    from frontier_lens.generate.calibration import calibrating_with
 
     n_each = cfg["n_each"]
     have = Counter(r["source_id"] for r in res.items)
@@ -335,26 +338,28 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
         return False
 
     log_fn = _log_fn(job_id, format_augment_event, on_event)
-    for missing, seeds in sorted(by_missing.items()):
-        common = {"run_id": cfg["run_id"], "n_each": missing,
-                  "log_fn": log_fn, "calibration_k": cfg["calibration_k"]}
-        if cfg["mode"] == "react_review":
-            generate_similar_react_review(
-                seeds, max_loops=cfg["max_loops"],
-                max_fix_iterations=cfg["max_fix_iterations"],
-                max_tune_rounds=cfg.get("max_tune_rounds", 2),
-                max_hint_levels=cfg.get("max_hint_levels", 3),
-                model_id=cfg.get("model_id"), **common,
-            )
-        elif cfg["mode"] == "review":
-            generate_similar_with_review(
-                seeds, max_fix_iterations=cfg["max_fix_iterations"], **common
-            )
-        elif cfg["mode"] == "react":
-            generate_similar_react(seeds, max_loops=cfg["max_loops"], **common)
-        else:
-            generate_similar_questions(
-                seeds, max_hint_levels=cfg.get("max_hint_levels", 3), **common)
+    # Generated questions are judged RL-suitable on the run's primary model.
+    with calibrating_with(cfg.get("model_id")):
+        for missing, seeds in sorted(by_missing.items()):
+            common = {"run_id": cfg["run_id"], "n_each": missing,
+                      "log_fn": log_fn, "calibration_k": cfg["calibration_k"]}
+            if cfg["mode"] == "react_review":
+                generate_similar_react_review(
+                    seeds, max_loops=cfg["max_loops"],
+                    max_fix_iterations=cfg["max_fix_iterations"],
+                    max_tune_rounds=cfg.get("max_tune_rounds", 2),
+                    max_hint_levels=cfg.get("max_hint_levels", 3),
+                    model_id=cfg.get("model_id"), **common,
+                )
+            elif cfg["mode"] == "review":
+                generate_similar_with_review(
+                    seeds, max_fix_iterations=cfg["max_fix_iterations"], **common
+                )
+            elif cfg["mode"] == "react":
+                generate_similar_react(seeds, max_loops=cfg["max_loops"], **common)
+            else:
+                generate_similar_questions(
+                    seeds, max_hint_levels=cfg.get("max_hint_levels", 3), **common)
 
 
 def _run_calibrate(job_id: str, cfg: dict, res: _Results) -> None:

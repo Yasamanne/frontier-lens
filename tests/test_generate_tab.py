@@ -964,3 +964,28 @@ def test_calibration_and_evaluate_grade_the_same_replies_the_same_way(monkeypatc
     for field in ("model", "thinking", "max_tokens"):
         assert {c[field] for c in calibration_calls} == {c[field] for c in evaluate_calls}, field
     assert all(not c.get("skip_correction") for c in calibration_calls + evaluate_calls)
+
+
+def test_calibration_samples_the_runs_primary_model(monkeypatch):
+    """RL suitability is measured on the model the run was performed with, not the default policy."""
+    from frontier_lens.generate import calibration
+    from frontier_lens.generate.calibration import _calibrate_collect, calibrating_with
+
+    seen: list[str] = []
+
+    class _Rec:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, prompt, model, **kw):
+            seen.append(model)
+            return Completion(text="FINAL: 13", latency_ms=1, tokens_in=1, tokens_out=1)
+
+    monkeypatch.setattr(calibration, "OpenAICompatibleProvider", _Rec)
+    with calibrating_with("gemma2-27b"):
+        stats = _calibrate_collect("what is 6+7?", "13", True, 2)
+    assert stats["policy_model"] == "gemma2-27b"
+    assert set(seen) == {"google/gemma-2-27b-it"}
+    seen.clear()
+    assert _calibrate_collect("what is 6+7?", "13", True, 2)["policy_model"] == "gemma4-26b-a4b"
+    assert set(seen) == {"google/gemma-4-26b-a4b-it"}
