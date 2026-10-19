@@ -1,6 +1,5 @@
-# Frontier Lens
-
-A small RL data engine for open-weight models. It measures a policy model on execution-verified tasks, finds where the policy has gaps, generates or repairs tasks at the edge of what it can do, gates them with human review whose feedback flows back into the generator, and exports RL-ready data.
+**Frontier Lens** is a model-aware data generation and evaluation platform designed to create high-value datasets for reinforcement learning.
+It evaluates a target model on verifiable tasks, identifies performance gaps, generates targeted questions, and rescues unsolved questions through progressive hints. Candidates are evaluated for learning potential and reviewed by subject-matter experts before being exported as training-ready datasets.
 
 ## Contents
 
@@ -35,7 +34,15 @@ A small RL data engine for open-weight models. It measures a policy model on exe
 
 ### Purpose
 
-A model gains the most from prompts it solves some of the time. Prompts it always solves or never solves yield no gradient signal during RL training (in GRPO, identical rewards in a group give zero advantage). Frontier Lens measures the pass rate of each question on the target model and keeps or builds questions in the productive range, the *learnable band* (`0 < pass_rate < 1`).
+In reinforcement learning methods such as Group Relative Policy Optimization (GRPO), questions with varying outcomes across sampled responses can provide useful learning signals. When all responses receive identical rewards, their relative advantages are zero, contributing no policy-gradient signal from that group.
+
+**Frontier Lens** uses model performance to identify, generate, and refine questions with high learning potential through three stages:
+
+1. **Gap Analysis & Targeted Generation:** Evaluate seed questions to identify weaknesses across topics, difficulty levels, and failure patterns. Use these findings to guide the generation of new questions targeting the model's identified gaps.
+2. **Learnable Band Discovery:** Evaluate each candidate across multiple model attempts and retain questions within the learnable band (`0 < pass_rate < 1`).
+3. **Hint-Based Data Rescue:** Apply progressive hints to questions the model consistently fails (`pass_rate = 0`). Re-evaluate the modified questions to determine whether they can enter the learnable band while preserving the original reasoning challenge.
+
+By combining **performance-driven generation, difficulty calibration, and hint-based rescue**, Frontier Lens aims to convert identified model weaknesses into useful, verifiable training examples.
 
 ### Inputs
 
@@ -48,11 +55,12 @@ A model gains the most from prompts it solves some of the time. Prompts it alway
 
 ### Pipeline
 
-1. **Evaluate.** The policy answers each question k times; responses are graded against the verified gold key. *Optional verifier check:* for questions with a pass rate of zero, a second model attempts them. If it gets at least one correct, the question and key are confirmed sound. If it gets none, the question is flagged for SME review as a possible defect.
-2. **Analyse.** Results are segmented by topic, difficulty band and failure mode to locate weaknesses.
-3. **Generate and repair.** The generator drafts new questions from in-band seeds. Questions the policy never solves are repaired with progressive hints. Each candidate is re-measured on the policy.
-4. **Review.** The SME approves or rejects each candidate. Decisions and rationale are fed back into later generation.
-
+1. **Evaluate:** Sample multiple responses from the target model and grade them against reference answers.
+2. **Analyze:** Identify model weaknesses across topics, difficulty levels, and failure patterns.
+3. **Generate:** Use gap analysis to select relevant seed questions and generate targeted variants addressing identified weaknesses.
+4. **Calibrate & Rescue:** Measure candidate pass rates, retain questions within the learnable band, and apply progressive hints to questions with zero observed success.
+5. **Review & Export:** Route candidates through SME review, incorporate reviewer feedback into subsequent generation, and export approved datasets.
+   
 ### Outputs
 
 | Output | Description |
@@ -64,7 +72,9 @@ A model gains the most from prompts it solves some of the time. Prompts it alway
 
 ### Grading
 
-Models answer tasks in plain text and must not run code. The gold key is the stdout of the task's verifier code, run in a sandbox. Answers end with `FINAL: <answer>`. The reward is `exact_match_v2`: it reads the last `FINAL:` line only (case-insensitive, so `Final: 42` counts; v1 was case-sensitive) and gives 0 to hedges.
+The evaluated policy produces text-only responses without executing code. For procedurally generated tasks, reference answers are obtained by executing verifier code in a restricted sandbox. Uploaded datasets use their provided reference answers, which are not automatically execution-verified.
+
+Responses must end with `FINAL: <answer>`. The `exact_match_v2` reward evaluates the final answer and rejects hedged or ambiguous responses.
 
 ### Glossary
 
@@ -102,7 +112,7 @@ Seed (procedural templates → sandbox keys)  ──►  Evaluate (policy k=8, r
      Dataset / Headroom  ◄──  SME review  ◄──  Generate (dead-zone rescue with hints,
      export JSONL             (reasons +        augmentation: one-shot / ReAct agent + Review,
                                notes)           each candidate calibrated against the policy)
-                                  │                      ▲
+                                  │                        ▲
                                   └── feedback.context_for ┘  (fed into generator prompts)
 ```
 
@@ -267,19 +277,30 @@ The generator (Gemma 4 31B) shares a family with the policy, and the judge (Deep
 
 ## Results so far
 
-From the local database (Oct 15–17, 36 evaluation runs with samples, 700 graded samples). These are small, exploratory numbers, not a benchmark.
+Evaluated **Gemma 4 26B-A4B** on 20 math questions, with 8 samples per question. Results are from a single exploratory run with one SME reviewer.
 
-| Policy (Gemma 4 26B-A4B), samples pooled across runs | Items | Samples | Accuracy | In band | Never solved | Always solved |
-|---|---|---|---|---|---|---|
-| Seed harness (L1) | 10 | 146 | 99% | 1 | 0 | 9 |
-| Seed train (L2/L3) | 6 | 58 | 50% | 2 | 2 | 2 |
-| Seed eval (held out) | 3 | 19 | 58% | 2 | 0 | 1 |
-| Uploaded math/MCQ sets | 39 | 261 | 50% | 15 | 16 | 8 |
+### Learnable-Band Growth
 
-- The harness passing at 99% means the prompt/`FINAL:` format and grading work end to end.
-- On uploaded sets, 38% of evaluated items were in the learnable band and 41% were never solved. The never-solved items are the targets for rescue.
-- Generation: three augmentation candidates were approved by SME review, and two rescue attempts ended with no hint level reaching the band.
-- **No training run was done. Coverage of the seed bank is small.** The next step is a full seed evaluation, then a GRPO run (see Next steps).
+| Metric | Count |
+|---|---:|
+| Baseline in-band questions | 6 |
+| New SME-approved questions | 9 |
+| Final in-band questions | 15 |
+| **Dataset growth** | **+150%** |
+
+### Generation Funnel
+
+| Generated | Approved | Pending | Rejected |
+|---:|---:|---:|---:|
+| 69 | 9 | 11 | 49 |
+
+- **Approval yield:** 13% of generated candidates (9/69).
+- **Rejections:** 42 SME rejections, 5 outside the learnable band, and 2 parsing errors.
+- **Learnable band:** Questions with `0 < pass_rate < 1`, measured across 8 attempts.
+
+### Limitations
+
+These results demonstrate **dataset expansion, not model improvement**. No RL training has been conducted. Hint-based rescue is implemented but has not yet demonstrated successful recovery. Results are preliminary and require validation across additional runs and reviewers.
 
 ## Testing and validation
 
@@ -343,12 +364,12 @@ From the local database (Oct 15–17, 36 evaluation runs with samples, 700 grade
     - the SME feedback loop;
     - independent code reviews;
     - this README refresh.
-  - I chose the problem and the design direction, reviewed and tested the changes, ran the system, and decided the tradeoffs. AI-written code was checked with tests, end-to-end runs and separate review passes, several of which found bugs that were then fixed. ⟨fill in: your own account of what you did and how you directed the tools⟩
+  **Development approach:** I defined the problem, designed the evaluation and data generation workflows, and directed implementation using Cursor and Claude Code. AI coding assistants accelerated scaffolding, implementation, debugging, and documentation. I retained responsibility for architectural decisions, technical tradeoffs, testing, and validation. Generated code was reviewed through automated tests, end-to-end execution, and iterative code reviews.
 - **Models inside the pipeline** are open-weight only (see Models).
 
 ## Prior work and attribution
 
-- Related work: [Dynabench](https://dynabench.org/) (adversarial human data), refreshing/live benchmarks, [Terminal-Bench](https://www.tbench.ai/) (execution-graded tasks), [TRL GRPO](https://huggingface.co/docs/trl/grpo_trainer) (the trainer the exports target).
+- Related work: [Terminal-Bench](https://www.tbench.ai/) (execution-graded tasks), [TRL GRPO](https://huggingface.co/docs/trl/grpo_trainer) (the trainer the exports target).
   - **What is different here:** generation targets one policy's learnable band; keys are executed; review is a statistical audit; and reviewer feedback is fed back into generation.
 - Seed tasks are original procedural templates in `src/frontier_lens/templates/`. No benchmark items are included in the repository.
 - The uploaded sets used in local experiments (MMLU, DeepMath, UltraData-Math CSVs) are **not redistributed here**. Anyone uploading third-party data should follow its licence.
