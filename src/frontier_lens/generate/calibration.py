@@ -1,12 +1,42 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from frontier_lens.config import POLICY_K
 from frontier_lens.parallel import map_unordered
 from frontier_lens.prompt import contest_prompt
 from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
-from frontier_lens.registry import policy_spec
+from frontier_lens.registry import model_spec
 from frontier_lens.reward import grade
 from frontier_lens.stats import in_learnable_band, pass_at_k, pass_rate
+
+_ACTIVE_MODEL: str | None = None
+
+
+@contextmanager
+def calibrating_with(model_id: str | None):
+    """Calibrate on *model_id*, the run's primary model, for everything inside the block.
+
+    A job is its own process, so one process-wide setting is enough and it reaches the
+    sampling threads. An explicit ``model_id=`` argument still wins.
+    """
+    global _ACTIVE_MODEL
+    previous, _ACTIVE_MODEL = _ACTIVE_MODEL, model_id
+    try:
+        yield
+    finally:
+        _ACTIVE_MODEL = previous
+
+
+def _calibration_spec(model_id: str | None):
+    return model_spec(model_id or _ACTIVE_MODEL)
+
+
+def _policy_complete(provider, policy, prompt: str) -> str:
+    """One policy sample with the same settings Evaluate uses (thinking flag, output cap)."""
+    return provider.complete(
+        prompt, policy.model, thinking=bool(policy.thinking), max_tokens=policy.max_tokens
+    ).text
 
 
 def estimate_pass_rate(
@@ -17,6 +47,7 @@ def estimate_pass_rate(
     complete_fn=None,
     k: int | None = None,
     log_fn=None,
+    model_id: str | None = None,
 ) -> dict:
     """Sample the policy k times (concurrently). Train-split calibration only — never call on eval.
 
@@ -26,13 +57,13 @@ def estimate_pass_rate(
 
     Samples finish out of order; *log_fn* runs on the caller's thread.
     """
-    policy = policy_spec()
+    policy = _calibration_spec(model_id)
     n = k if k is not None else POLICY_K
     if complete_fn is None:
         provider = OpenAICompatibleProvider(policy.base_url or "", policy.api_key_env)
 
         def complete_fn(prompt: str) -> str:
-            return provider.complete(prompt, policy.model).text
+            return _policy_complete(provider, policy, prompt)
 
     def _sample(_i: int) -> int:
         reward, _, _ = grade(complete_fn(contest_prompt(stem)), key, numeric)
@@ -61,6 +92,7 @@ def _calibrate_collect(
     k: int,
     complete_fn=None,
     log_fn=None,
+    model_id: str | None = None,
 ) -> dict:
     """Like ``estimate_pass_rate`` but also returns individual raw responses.
 
@@ -72,12 +104,12 @@ def _calibrate_collect(
           "responses": [{"raw": str, "parsed": str, "is_correct": bool}]
         }
     """
-    policy = policy_spec()
+    policy = _calibration_spec(model_id)
     if complete_fn is None:
         provider = OpenAICompatibleProvider(policy.base_url or "", policy.api_key_env)
 
         def complete_fn(prompt: str) -> str:
-            return provider.complete(prompt, policy.model).text
+            return _policy_complete(provider, policy, prompt)
 
     def _sample(_i: int) -> tuple[str, int, str | None]:
         raw = complete_fn(contest_prompt(stem))

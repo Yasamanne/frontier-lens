@@ -1,0 +1,991 @@
+import json
+from pathlib import Path
+from types import SimpleNamespace as NS
+
+from sqlalchemy import text
+from streamlit.testing.v1 import AppTest
+
+from frontier_lens import runstate
+from frontier_lens.db import get_engine
+from frontier_lens.generate import calibration, similar
+from frontier_lens.generate.calibration import estimate_pass_rate
+from frontier_lens.generate.candidates import _store_candidate
+from frontier_lens.providers.base import Completion
+from frontier_lens.registry import sync_models
+
+PAGE = str(Path(__file__).resolve().parents[1] / "app" / "pages" / "4_Generate_Review.py")
+
+RAW = json.dumps(
+    {"stem": "what number?", "lang": "python", "code": "print(4)\n", "input_files": {},
+     "numeric": True}
+)
+
+
+def _candidate(mode, answers, split="train"):
+    replies = iter(answers)
+
+    def complete(_prompt):
+        return next(replies)
+
+    cid = _store_candidate(
+        RAW, "python_state", "hard", "gen", mode, ["src"], rl_split=split,
+        calibrate=split == "train", complete_fn=complete, calibration_k=len(answers),
+    )
+    with get_engine().connect() as conn:
+        return conn.execute(
+            text("SELECT status, auto_reject_reason, policy_pass_rate FROM candidates WHERE id=:i"),
+            {"i": cid},
+        ).mappings().one()
+
+
+# ── augmentation candidates must land in the learnable band ────────────
+
+def test_augmentation_candidate_the_policy_always_solves_is_rejected():
+    row = _candidate("similar_augment", ["FINAL: 4"] * 4)
+    assert (row["status"], row["auto_reject_reason"], row["policy_pass_rate"]) == (
+        "auto_rejected", "out_of_band", 1.0)
+
+
+def test_augmentation_candidate_the_policy_never_solves_is_rejected():
+    row = _candidate("similar_augment", ["FINAL: 9"] * 4)
+    assert (row["status"], row["auto_reject_reason"], row["policy_pass_rate"]) == (
+        "auto_rejected", "out_of_band", 0.0)
+
+
+def test_augmentation_candidate_in_the_band_reaches_the_sme_queue():
+    row = _candidate("similar_augment", ["FINAL: 4", "FINAL: 9", "FINAL: 4", "FINAL: 9"])
+    assert (row["status"], row["auto_reject_reason"], row["policy_pass_rate"]) == (
+        "pending", None, 0.5)
+
+
+def test_eval_split_candidates_are_not_calibrated_or_filtered():
+    row = _candidate("similar_augment", [], split="eval")
+    assert (row["status"], row["policy_pass_rate"]) == ("pending", None)
+
+
+# ── calibration samples the policy the way Evaluate does ───────────────
+
+def test_calibration_uses_the_policys_thinking_flag_and_output_cap(monkeypatch):
+    seen: list[dict] = []
+
+    class FakeProvider:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, prompt, model, **kw):
+            seen.append(kw)
+            return Completion(text="FINAL: 4", latency_ms=1, tokens_in=1, tokens_out=1)
+
+    monkeypatch.setattr(calibration, "OpenAICompatibleProvider", FakeProvider)
+    estimate_pass_rate("stem", "4", k=2)
+    calibration._calibrate_collect("stem", "4", True, 2)
+    assert len(seen) == 4
+    assert all(kw["max_tokens"] == 16000 and kw["thinking"] is False for kw in seen)
+
+
+# ── the Model picker only lists models that have samples in the run ────
+
+def _completed_run(run_id, model_id, created):
+    runstate.insert_run(run_id, ["q"], 1, None, {}, status="complete")
+    with get_engine().begin() as conn:
+        conn.execute(text("UPDATE eval_runs SET created_at=:c WHERE id=:i"), {"c": created, "i": run_id})
+        conn.execute(
+            text(
+                "INSERT INTO attempts (run_id, model_id, question_id, sample_index, raw_output, "
+                "parsed_answer, is_correct, unparsable) VALUES (:r, :m, 'q1', 1, 'FINAL: 4', '4', 1, 0)"
+            ),
+            {"r": run_id, "m": model_id},
+        )
+
+
+def test_generate_page_lists_only_the_models_of_the_selected_run():
+    sync_models()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO questions (id, topic, level, band, split, template, params_json, stem,
+                    code, lang, input_files_json, key, numeric, source)
+                VALUES ('q1', 't', 2, 'standard', 'train', 't', '{}', 'stem', 'print(4)', 'python',
+                        '{}', '4', 1, 'seed')
+                """
+            )
+        )
+    _completed_run("run_old", "gemma4-31b", "2026-10-01T00:00:00+00:00")
+    _completed_run("run_new", "gemma4-26b-a4b", "2026-10-02T00:00:00+00:00")
+
+    at = AppTest.from_file(PAGE, default_timeout=60)
+    at.session_state["role"] = "Viewer"
+    at.run()
+    assert not at.exception
+    assert list(at.selectbox(key="gen_model_sel2").options) == ["gemma4-26b-a4b"]  # newest run
+
+    at.selectbox(key="gen_run_sel2").select("run_old").run()
+    assert not at.exception
+    assert list(at.selectbox(key="gen_model_sel2").options) == ["gemma4-31b"]
+
+
+# ── the gold key must be one non-empty line ─────────────────────────────
+
+def _raw(code):
+    return json.dumps(
+        {"stem": "what number?", "lang": "python", "code": code, "input_files": {}, "numeric": True}
+    )
+
+
+def _store(code):
+    replies = iter(["FINAL: 4", "FINAL: 9"])  # half right, so a valid candidate is in the band
+    cid = _store_candidate(
+        _raw(code), "python_state", "hard", "gen", "similar_augment", ["src"],
+        calibrate=True, complete_fn=lambda _p: next(replies), calibration_k=2,
+    )
+    with get_engine().connect() as conn:
+        return cid, conn.execute(
+            text("SELECT status, auto_reject_reason, executed_key FROM candidates WHERE id=:i"),
+            {"i": cid},
+        ).mappings().one()
+
+
+def test_candidate_whose_code_prints_nothing_is_auto_rejected():
+    _, row = _store("x = 1 + 1\n")
+    assert (row["status"], row["auto_reject_reason"], row["executed_key"]) == (
+        "auto_rejected", "empty_output", None)
+
+
+def test_candidate_whose_code_prints_several_lines_is_auto_rejected():
+    _, row = _store("print(1)\nprint(2)\n")
+    assert (row["status"], row["auto_reject_reason"]) == ("auto_rejected", "multi_line_output")
+
+
+def test_agent_run_snippet_reports_a_bad_output_to_the_model():
+    from frontier_lens.agent.tools import handle
+
+    out = json.loads(
+        handle("run_snippet", {"lang": "python", "code": "print(1)\nprint(2)\n"},
+               gen_id="g", fail_model="")
+    )
+    assert out["ok"] is False and out["reason"] == "multi_line_output"
+
+
+def test_approving_a_candidate_with_bad_output_does_not_promote_it():
+    from frontier_lens.review import promote
+
+    cid, _ = _store("print(4)\n")  # a good pending candidate...
+    with get_engine().begin() as conn:  # ...whose code is then edited to print two lines
+        conn.execute(text("UPDATE candidates SET code='print(1)\nprint(2)\n' WHERE id=:i"), {"i": cid})
+    promote(cid, "hard_item", fair=True, novel=True, hard=True)
+    with get_engine().connect() as conn:
+        status, reason = conn.execute(
+            text("SELECT status, auto_reject_reason FROM candidates WHERE id=:i"), {"i": cid}
+        ).one()
+        n_questions = conn.execute(
+            text("SELECT COUNT(*) FROM questions WHERE source='generated'")
+        ).scalar()
+    assert (status, reason, n_questions) == ("auto_rejected", "multi_line_output", 0)
+
+
+# ── ReAct agent + Review (the merged augmentation mode) ─────────────────
+
+SEED = {"id": "seed1", "stem": "seed stem", "key": "7", "numeric": 1,
+        "topic": "python_state", "band": "hard"}
+
+
+def _draft(stem="new stem", code="print(4)\n"):
+    return {"stem": stem, "lang": "python", "code": code, "topic": "python_state",
+            "band": "hard", "numeric": True}
+
+
+def _call(call_id, name, args):
+    return NS(id=call_id, function=NS(name=name, arguments=json.dumps(args)))
+
+
+class FakeAgentClient:
+    """Each chat call answers with the next scripted list of tool calls (None = no tool call)."""
+
+    def __init__(self, rounds):
+        self.rounds = iter(rounds)
+        self.seen: list[list] = []
+        self.kwargs: list[dict] = []
+        self.chat = NS(completions=NS(create=self._create))
+
+    def _create(self, **kw):
+        self.seen.append(list(kw["messages"]))
+        self.kwargs.append({k: v for k, v in kw.items() if k != "messages"})
+        calls = next(self.rounds, None)
+        return NS(choices=[NS(message=NS(tool_calls=calls, content=""))])
+
+
+class FakeJudge:
+    def __init__(self, scores):
+        self.scores = iter(scores)
+        self.prompts: list[str] = []
+
+    def complete(self, prompt, model, **kw):
+        self.prompts.append(prompt)
+        score = next(self.scores)
+        body = {"score": score, "passed": score >= 75, "criterion_scores": {},
+                "issues": [] if score >= 75 else ["too close to the seed"],
+                "fix_instructions": "make it more different"}
+        return Completion(text=json.dumps(body), latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+def _run_react_review(rounds, scores, monkeypatch, replies=None, **kw):
+    sync_models()
+    monkeypatch.setattr(similar, "sme_feedback_for", lambda *a, **k: "SME-FEEDBACK-MARKER")
+    client, judge = FakeAgentClient(rounds), FakeJudge(scores)
+    replies = iter(replies if replies is not None else ["FINAL: 4", "FINAL: 9"] * 4)  # in the band
+    kw.setdefault("max_loops", 3)
+    results = similar.generate_similar_react_review(
+        [SEED], calibration_k=2, complete_fn=lambda _p: next(replies),
+        _client=client, _judge_provider=judge, **kw,
+    )
+    return results, client, judge
+
+
+def _candidates():
+    with get_engine().connect() as conn:
+        return [dict(r) for r in conn.execute(
+            text("SELECT stem, code, status, generator_mode, source_fail_ids FROM candidates")
+        ).mappings()]
+
+
+def test_react_review_agent_tests_its_code_then_a_passing_draft_is_stored(monkeypatch):
+    sync_models()
+    with get_engine().begin() as conn:  # an earlier variant of the same seed
+        conn.execute(text(
+            "INSERT INTO candidates (id, stem, status, generator_mode, source_fail_ids, topic, band) "
+            "VALUES ('old', 'OLD VARIANT STEM', 'pending', 'similar_augment', '[\"seed1\"]', "
+            "'python_state', 'hard')"))
+    rounds = [
+        [_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        [_call("2", "submit_draft", _draft())],
+    ]
+    results, client, judge = _run_react_review(rounds, [85], monkeypatch)
+
+    assert [(r["status"], r["reason"]) for r in results] == [("pending", None)]
+    stored = [c for c in _candidates() if c["stem"] == "new stem"]
+    assert len(stored) == 1
+    assert (stored[0]["generator_mode"], json.loads(stored[0]["source_fail_ids"])) == (
+        "similar_augment", ["seed1"])
+    first_prompt = client.seen[0][0]["content"]
+    assert "SME-FEEDBACK-MARKER" in first_prompt          # SME feedback from other samples
+    assert "OLD VARIANT STEM" in first_prompt             # earlier variants of this seed
+    assert "Gold answer of the seed" in first_prompt and "7" in first_prompt
+    assert "SME-FEEDBACK-MARKER" in judge.prompts[0]      # the reviewer sees it too
+    tool_msgs = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "tool"]
+    assert json.loads(tool_msgs[0]["content"])["ok"] is True   # run_snippet really ran
+
+
+def test_react_review_failed_review_goes_back_into_the_same_conversation(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("first stem"))],
+              [_call("2", "submit_draft", _draft("second stem"))]]
+    results, client, judge = _run_react_review(rounds, [60, 90], monkeypatch)
+
+    assert [r["status"] for r in results] == ["pending"]
+    assert [c["stem"] for c in _candidates()] == ["second stem"]
+    feedback = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "REVIEWER FEEDBACK" in feedback["content"] and "too close to the seed" in feedback["content"]
+    assert len(judge.prompts) == 2
+
+
+def test_react_review_stores_nothing_when_no_draft_reaches_the_pass_mark(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft())], [_call("2", "submit_draft", _draft())]]
+    results, _, _ = _run_react_review(rounds, [50, 55], monkeypatch, max_fix_iterations=1)
+    assert [r["status"] for r in results] == ["review_failed"]
+    assert "2 drafts" in results[0]["reason"]
+    assert _candidates() == []
+
+
+def test_react_review_agent_that_never_submits_is_handled(monkeypatch):
+    results, _, judge = _run_react_review([None], [], monkeypatch, max_fix_iterations=0)
+    assert [r["status"] for r in results] == ["review_failed"]
+    assert judge.prompts == [] and _candidates() == []
+
+
+def test_react_review_bad_sandbox_output_never_reaches_the_reviewer(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft(code="print(1)\nprint(2)\n"))],
+              [_call("2", "submit_draft", _draft("fixed stem"))]]
+    results, client, judge = _run_react_review(rounds, [88], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"]
+    assert len(judge.prompts) == 1                      # only the runnable draft was reviewed
+    fix = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "multi_line_output" in fix["content"]
+
+
+# ── the augment job: dispatch and the saved reject reason ───────────────
+
+def test_augment_job_dispatches_react_review_and_keeps_the_reject_reason(monkeypatch):
+    from frontier_lens import jobs
+
+    got: dict = {}
+
+    def fake(seeds, *, max_loops, max_fix_iterations, max_tune_rounds, log_fn, **common):
+        got.update(seeds=seeds, max_loops=max_loops, max_fix_iterations=max_fix_iterations,
+                   max_tune_rounds=max_tune_rounds)
+        log_fn("similar_result", source_id="seed1", candidate_id="c1", status="auto_rejected",
+               pass_rate=1.0, auto_reject_reason="out_of_band")
+
+    monkeypatch.setattr("frontier_lens.generate.generate_similar_react_review", fake)
+    monkeypatch.setattr(jobs, "_log_fn", lambda job_id, fmt, on_event: (
+        lambda event, **fields: on_event(event, fields)))
+    res = NS(items=[], skipped=[], add=lambda item, skipped=False: res.items.append(item))
+    cfg = {"run_id": "r", "mode": "react_review", "seeds": [SEED], "n_each": 1,
+           "calibration_k": 2, "max_loops": 4, "max_fix_iterations": 2, "max_tune_rounds": 1}
+    jobs._run_augment("job1", cfg, res)
+
+    assert (got["max_loops"], got["max_fix_iterations"], got["max_tune_rounds"]) == (4, 2, 1)
+    assert [(i["status"], i["reason"]) for i in res.items] == [("auto_rejected", "out_of_band")]
+
+
+def test_augmentation_controls_offer_one_shot_and_the_merged_mode():
+    sync_models()
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO questions (id, topic, level, band, split, template, params_json, stem, "
+            "code, lang, input_files_json, key, numeric, source) VALUES "
+            "('q1', 't', 2, 'standard', 'train', 't', '{}', 'stem', 'print(4)', 'python', "
+            "'{}', '4', 1, 'seed')"))
+    _completed_run("run1", "gemma4-26b-a4b", "2026-10-02T00:00:00+00:00")
+    with get_engine().begin() as conn:  # one right and one wrong sample: in the band
+        conn.execute(text(
+            "INSERT INTO attempts (run_id, model_id, question_id, sample_index, raw_output, "
+            "parsed_answer, is_correct, unparsable) VALUES "
+            "('run1', 'gemma4-26b-a4b', 'q1', 2, 'FINAL: 9', '9', 0, 0)"))
+
+    at = AppTest.from_file(PAGE, default_timeout=60)
+    at.session_state["role"] = "Organizer"
+    at.run()
+    assert not at.exception
+    assert list(at.radio(key="aug_mode").options) == ["🎯 One-shot", "🤖 ReAct agent + Review"]
+    assert at.radio(key="aug_mode").value == "🤖 ReAct agent + Review"
+    assert at.slider(key="aug_loops").value == 3 and at.slider(key="aug_fix_iters").value == 3
+    assert at.slider(key="aug_tune_rounds").value == 2
+    assert at.slider(key="aug_hint_levels").value == 3
+    # worst case, 1 candidate: (2 tune + 1) rounds x ((3 fix + 1) drafts x (3 loops + 1) + k=4) = 60,
+    # plus 3 hint levels x (1 hint call + k=4 samples) = 15
+    assert any("up to ~75 API calls" in c.value for c in at.caption)
+
+    at.radio(key="aug_mode").set_value("🎯 One-shot").run()
+    assert not at.exception
+    # one-shot, worst case: (1 generation + k=4 samples) + 3 hint levels x (1 hint call + 4 samples) = 20
+    assert any("up to ~20 API calls" in c.value for c in at.caption)
+
+
+def test_react_review_forces_submit_draft_on_the_last_round(monkeypatch):
+    rounds = [
+        [_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        [_call("2", "check_similarity", {"stem": "x"})],
+        [_call("3", "submit_draft", _draft())],
+    ]
+    results, client, _ = _run_react_review(rounds, [90], monkeypatch)   # max_loops = 3
+    assert [r["status"] for r in results] == ["pending"]
+    assert ["tool_choice" in kw for kw in client.kwargs] == [False, False, True]
+    assert client.kwargs[2]["tool_choice"]["function"]["name"] == "submit_draft"
+    names = [[t["function"]["name"] for t in kw["tools"]] for kw in client.kwargs]
+    assert names[0] == ["run_snippet", "check_similarity", "submit_draft"]
+    assert names[2] == ["submit_draft"]       # the last round offers nothing else
+
+
+def test_generation_prompts_are_not_limited_to_coding_topics():
+    from frontier_lens.generate import prompts
+
+    for name in ("SIMILAR_QUESTION_PROMPT", "SIMILAR_FIX_PROMPT", "SIMILAR_AGENT_SYSTEM",
+                 "SIMILAR_AGENT_REVIEW_SYSTEM"):
+        text_ = getattr(prompts, name)
+        assert "must be one of: python_state" not in text_, name
+        assert "mathematics" in text_ and "algebra" in text_, name
+
+
+# ── difficulty tuning: the measured pass rate goes back to the agent ────
+
+def test_too_easy_draft_is_sent_back_for_a_harder_version(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("easy stem"))],
+              [_call("2", "submit_draft", _draft("harder stem"))]]
+    replies = ["FINAL: 4", "FINAL: 4",      # round 0: the policy solves it every time
+               "FINAL: 4", "FINAL: 9"]      # round 1: now in the band
+    results, client, _ = _run_react_review(
+        rounds, [90, 90], monkeypatch, replies=replies, max_tune_rounds=1)
+
+    assert [(r["status"], r["pass_rate"]) for r in results] == [("pending", 0.5)]
+    assert [c["stem"] for c in _candidates()] == ["harder stem"]   # the easy draft is not stored
+    tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "solved your latest draft 2/2 times" in tune["content"] and "too easy" in tune["content"]
+    assert "1. solved 2/2: easy stem" in tune["content"]            # the drafts so far
+    assert "HOW THE POLICY SOLVED YOUR LATEST DRAFT" in tune["content"]
+    assert "FINAL: 4" in tune["content"]                            # one correct policy reply
+    assert "enlarge the input or the bounds moderately" in tune["content"]   # the levers
+    assert "ONE lever, moderately" in tune["content"]               # a small first step
+    assert "bigger step" not in tune["content"]                     # only after repeated easy drafts
+    assert "about half the time" in tune["content"]
+
+
+def test_last_draft_is_stored_as_out_of_band_when_tuning_runs_out(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("first stem"))],
+              [_call("2", "submit_draft", _draft("second stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90, 90], monkeypatch, replies=["FINAL: 4"] * 4, max_tune_rounds=1)
+    assert [(r["status"], r["reason"]) for r in results] == [("auto_rejected", "out_of_band")]
+    assert [(c["stem"], c["status"]) for c in _candidates()] == [("second stem", "auto_rejected")]
+
+
+def test_never_solved_draft_asks_the_agent_to_check_the_question_first(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))],
+              [_call("2", "submit_draft", _draft("fixed stem"))]]
+    replies = ["FINAL: 9", "FINAL: 9", "FINAL: 4", "FINAL: 9"]
+    results, client, _ = _run_react_review(
+        rounds, [90, 90], monkeypatch, replies=replies, max_tune_rounds=1)
+    assert [r["status"] for r in results] == ["pending"]
+    tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "latest draft 0/2 times" in tune["content"] and "9 (x2)" in tune["content"]
+    assert "Your code computed: 4" in tune["content"] and "ask exactly what the code" in tune["content"]
+    assert "BETWEEN that one and this one" in tune["content"]
+    assert "1. solved 0/2: hard stem" in tune["content"]
+
+
+def test_no_tuning_rounds_means_an_out_of_band_draft_is_just_rejected(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    results, client, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=["FINAL: 4"] * 2, max_tune_rounds=0)
+    assert [r["status"] for r in results] == ["auto_rejected"]
+    assert len(client.seen) == 1
+
+
+# ── what the agent is told before it writes ─────────────────────────────
+
+def test_agent_prompt_describes_how_the_policy_behaves_on_the_seed(monkeypatch):
+    sync_models()
+    policy = "gemma4-26b-a4b"
+    runstate.insert_run("r1", ["seed1"], 3, None, {}, status="complete")
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO questions (id, topic, level, band, split, template, params_json, stem, "
+            "code, lang, input_files_json, key, numeric, source) VALUES "
+            "('seed1', 'python_state', 3, 'hard', 'train', 't', '{}', 'seed stem', 'print(7)', "
+            "'python', '{}', '7', 1, 'seed')"))
+        for i, (ans, ok) in enumerate([("6", 0), ("6", 0), ("7", 1)], start=1):
+            conn.execute(text(
+                "INSERT INTO attempts (run_id, model_id, question_id, sample_index, raw_output, "
+                "parsed_answer, is_correct, unparsable) VALUES ('r1', :m, 'seed1', :i, 'x', :a, :ok, 0)"),
+                {"m": policy, "i": i, "a": ans, "ok": ok})
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    _, client, _ = _run_react_review(rounds, [90], monkeypatch, run_id="r1")
+    prompt = client.seen[0][0]["content"]
+    assert "answered correctly 1/3 times" in prompt
+    assert "6 (x2)" in prompt
+    assert "Policy failure analysis" in prompt          # the failure mode of the seed's cell
+    assert "about half the time" in prompt and "enlarge the input or the bounds moderately" in prompt
+
+
+def test_precomputed_calibration_is_not_repeated():
+    def boom(_prompt):
+        raise AssertionError("must not sample the policy again")
+
+    stats = {"pass_rate": 0.5, "pass_at_k": 0.9, "in_learnable_band": True, "n": 2, "correct": 1}
+    cid = _store_candidate(
+        RAW, "python_state", "hard", "gen", "similar_augment", ["src"],
+        calibrate=True, complete_fn=boom, precomputed_stats=stats,
+    )
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text("SELECT status, policy_pass_rate FROM candidates WHERE id=:i"), {"i": cid}
+        ).one()
+    assert tuple(row) == ("pending", 0.5)
+
+
+def test_job_log_describes_the_tuning_step():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event("tune_result", round=1, pass_rate=1.0, n_correct=4, n=4, in_band=False)
+    assert "4/4 solved" in line and "retune" in line
+
+
+def test_agent_that_spends_every_round_testing_gets_one_last_chance_to_submit(monkeypatch):
+    rounds = [
+        [_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        [_call("2", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        None,                                            # the forced last round is ignored
+        [_call("3", "submit_draft", _draft("late stem"))],  # the extra nudged call
+    ]
+    results, client, _ = _run_react_review(rounds, [90], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"]
+    assert [c["stem"] for c in _candidates()] == ["late stem"]
+    assert len(client.seen) == 4
+    assert [t["function"]["name"] for t in client.kwargs[3]["tools"]] == ["submit_draft"]
+    nudge = [m for m in client.seen[3] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "Submit your final draft now" in nudge["content"]
+    assert client.kwargs[3]["tool_choice"]["function"]["name"] == "submit_draft"
+
+
+def test_a_failed_retune_keeps_the_earlier_measured_draft(monkeypatch):
+    # round 0 submits a draft the policy always solves; the retune round never delivers a draft
+    rounds = [[_call("1", "submit_draft", _draft("first stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=["FINAL: 4"] * 2, max_tune_rounds=1,
+        max_loops=1, max_fix_iterations=0)
+    assert [(r["status"], r["reason"], r["pass_rate"]) for r in results] == [
+        ("auto_rejected", "out_of_band", 1.0)]
+    assert [(c["stem"], c["status"]) for c in _candidates()] == [("first stem", "auto_rejected")]
+
+
+# ── the reviewer: pass mark is enforced in code, and difficulty is not scored ──
+
+class _StubReviewer:
+    def __init__(self, reply):
+        self.reply, self.prompt = reply, ""
+
+    def complete(self, prompt, model, **kw):
+        self.prompt = prompt
+        return Completion(text=json.dumps(self.reply), latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+def _review(reply):
+    reviewer = _StubReviewer(reply)
+    result = similar._review_similar_question(
+        stem="g", code="print(4)", lang="python", computed_key="4", seed_stem="s", seed_key="7",
+        band="standard", prior_stems=[], provider=reviewer, model="m", sme_feedback="none",
+    )
+    return result, reviewer
+
+
+def test_review_pass_is_decided_by_the_score_not_by_the_models_own_flag():
+    from frontier_lens.generate.prompts import REVIEW_PASS_SCORE
+
+    assert REVIEW_PASS_SCORE == 75
+    cases = [(74, True, False), (75, False, True), (95, False, True), (70, True, False),
+             (0, True, False), (250, False, True)]
+    for score, model_says_passed, expected in cases:
+        result, _ = _review({"score": score, "passed": model_says_passed, "issues": []})
+        assert result["passed"] is expected, (score, model_says_passed)
+    assert _review({"score": 250})[0]["score"] == 100          # scores are clamped to 0..100
+
+
+def test_reviewer_prompt_states_the_pass_mark_and_does_not_score_difficulty():
+    _, reviewer = _review({"score": 80})
+    p = reviewer.prompt
+    assert "Pass threshold: 75." in p and "true if score >= 75" in p
+    assert "DIFFICULTY IS NOT SCORED" in p
+    assert "do NOT take points off" in p and "harder or an easier variant" in p
+    assert "difficulty band" not in p and "difficulty_appropriate" not in p
+    assert "self_contained" in p and "SELF-CONTAINED AND CONSISTENT" in p
+
+
+def test_a_harder_variant_is_not_failed_for_its_difficulty(monkeypatch):
+    # the reviewer's own flag says "failed" but the score clears the mark, so the draft goes on
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    sync_models()
+    monkeypatch.setattr(similar, "sme_feedback_for", lambda *a, **k: "none")
+    replies = iter(["FINAL: 4", "FINAL: 9"] * 2)
+    results = similar.generate_similar_react_review(
+        [SEED], max_loops=3, calibration_k=2, complete_fn=lambda _p: next(replies),
+        _client=FakeAgentClient(rounds), max_tune_rounds=0,
+        _judge_provider=_StubReviewer({"score": 88, "passed": False, "issues": []}),
+    )
+    assert [r["status"] for r in results] == ["pending"]
+
+
+def test_repeated_easy_drafts_trigger_a_demand_for_a_substantial_change(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("variant A"))],
+              [_call("2", "submit_draft", _draft("variant B"))],
+              [_call("3", "submit_draft", _draft("variant C"))]]
+    results, client, _ = _run_react_review(
+        rounds, [90, 90, 90], monkeypatch, replies=["FINAL: 4"] * 6, max_tune_rounds=2)
+    assert [r["status"] for r in results] == ["auto_rejected"]
+    first = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    third = [m for m in client.seen[2] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "bigger step" not in first["content"] and "ONE lever, moderately" in first["content"]
+    assert "2 drafts in a row were solved every time, so take a bigger step" in third["content"]
+    assert "TWO levers, or one lever clearly" in third["content"]
+    assert "1. solved 2/2: variant A" in third["content"] and "2. solved 2/2: variant B" in third["content"]
+    assert "would overshoot" in third["content"]   # a bigger step, but within the seed's kind of reasoning
+
+
+# ── out_of_band wording, and the option to keep such candidates for the SME ──
+
+def test_out_of_band_is_explained_as_pass_rate_not_as_a_mismatch_with_the_seed():
+    from frontier_lens.generate.utils import reason_label
+
+    assert reason_label("out_of_band", 1.0).startswith("too easy")
+    assert reason_label("out_of_band", 0.0).startswith("never solved")
+    assert reason_label("out_of_band", None) == "out of the learnable band"
+    assert reason_label("unsafe", None) == "unsafe" and reason_label(None, 0.5) == "—"
+
+
+def test_job_log_names_the_reason_in_plain_words():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event(
+        "similar_result", candidate_id="c1", status="auto_rejected", pass_rate=1.0,
+        auto_reject_reason="out_of_band")
+    assert "too easy: the policy solved every sample" in line
+
+
+# ── the generator model and its thinking setting ────────────────────────
+
+def test_generator_is_gemma_31b_with_thinking_on():
+    from frontier_lens.registry import load_yaml
+
+    gen = next(m for m in load_yaml() if m.role == "generator")
+    assert (gen.model, gen.family, gen.thinking) == ("google/gemma-4-31b-it", "gemma", True)
+
+
+def test_generator_thinking_flag_becomes_an_explicit_reasoning_switch():
+    from frontier_lens.generate.utils import generator_extra_body, generator_kwargs
+
+    on, off = NS(thinking=True), NS(thinking=False)
+    assert generator_extra_body(on) == {"reasoning": {"enabled": True}}
+    assert generator_extra_body(off) == {"reasoning": {"enabled": False}}
+    assert generator_kwargs(on) == {"thinking": True, "extra_body": {"reasoning": {"enabled": True}}}
+    assert generator_kwargs(off)["thinking"] is False
+
+
+def test_every_agent_call_carries_the_generators_reasoning_switch(monkeypatch):
+    rounds = [[_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+              [_call("2", "submit_draft", _draft())]]
+    _, client, _ = _run_react_review(rounds, [90], monkeypatch)
+    assert client.kwargs and all(
+        kw["extra_body"] == {"reasoning": {"enabled": True}} for kw in client.kwargs)
+
+
+# ── thinking calls are slow: long timeout and a visible "waiting" line ───
+
+def test_generator_timeout_covers_a_thinking_call():
+    from frontier_lens.generate.utils import generator_timeout
+
+    assert generator_timeout(NS(thinking=True)) == 900     # Gemma 4 31B thinking: 66-190 s, more under load
+    assert generator_timeout(NS(thinking=False)) == 120
+    assert generator_timeout(NS()) == 120                  # a spec without the flag
+
+
+def test_provider_accepts_a_timeout(monkeypatch):
+    from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    assert OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY").client.timeout == 120
+    slow = OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", timeout=900)
+    assert slow.client.timeout == 900
+
+
+def test_agent_calls_use_the_long_timeout_and_log_each_wait(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    rounds = [[_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+              [_call("2", "submit_draft", _draft())]]
+    _, client, _ = _run_react_review(
+        rounds, [90], monkeypatch, log_fn=lambda event, **f: events.append((event, f)))
+    assert [kw["timeout"] for kw in client.kwargs] == [900, 900]   # the generator thinks
+    waits = [f for e, f in events if e == "agent_call"]
+    assert [(w["step"], w["thinking"]) for w in waits] == [(1, True), (2, True)]
+
+
+def test_generator_providers_get_the_long_timeout(monkeypatch):
+    seen: list[float] = []
+
+    class RecordingProvider:
+        def __init__(self, base_url, api_key_env=None, timeout=120):
+            seen.append(timeout)
+
+        def complete(self, prompt, model, **kw):
+            return Completion(text="not json", latency_ms=1, tokens_in=1, tokens_out=1)
+
+    sync_models()
+    monkeypatch.setattr(similar, "OpenAICompatibleProvider", RecordingProvider)
+    similar.generate_similar_questions([SEED], calibration_k=2)
+    assert seen == [900]
+
+
+def test_job_log_shows_that_it_is_waiting_for_the_generator():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event("agent_call", step=2, thinking=True)
+    assert "step 2" in line and "waiting for the generator" in line and "several minutes" in line
+    assert "several minutes" not in format_augment_event("agent_call", step=1, thinking=False)
+
+
+# ── never-solved drafts go to the dead-zone rescue ──────────────────────
+
+class FakeHintProvider:
+    """Stands in for the generator when it writes hints: level n returns 'hinted stem n'."""
+
+    def __init__(self):
+        self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
+
+    def complete(self, prompt, model, **kw):
+        self.prompts.append(prompt)
+        self.kwargs.append(kw)
+        n = len(self.prompts)
+        body = {"stem": f"hinted stem {n}", "hint": f"hint {n}"}
+        return Completion(text=json.dumps(body), latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+_NEVER = ["FINAL: 9", "FINAL: 9"]      # k = 2, no sample correct
+_HALF = ["FINAL: 4", "FINAL: 9"]       # in the band
+
+
+def test_never_solved_draft_is_rescued_by_a_hint_and_goes_to_the_sme(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER + _NEVER + _HALF, max_tune_rounds=0,
+        _gen_provider=hints)
+
+    assert [(r["status"], r["rescued_level"], r["pass_rate"]) for r in results] == [
+        ("pending", 2, 0.5)]
+    stored = _candidates()
+    assert [(c["stem"], c["status"], c["generator_mode"]) for c in stored] == [
+        ("hinted stem 2", "pending", "light_hint")]
+    assert stored[0]["code"] == "print(4)\n" and json.loads(stored[0]["source_fail_ids"]) == ["seed1"]
+    assert len(hints.prompts) == 2
+    assert "GOLD ANSWER" in hints.prompts[0] and "hinted stem 1" in hints.prompts[1]  # builds on level 1
+    assert hints.kwargs[0]["thinking"] is True                                         # generator settings
+    assert hints.kwargs[0]["extra_body"] == {"reasoning": {"enabled": True}}
+
+
+def test_never_solved_draft_that_no_hint_rescues_is_rejected_out_of_band(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER * 4, max_tune_rounds=0,
+        max_hint_levels=2, _gen_provider=hints)
+    assert [(r["status"], r["reason"], r["rescued_level"]) for r in results] == [
+        ("auto_rejected", "out_of_band", None)]
+    assert [(c["stem"], c["status"]) for c in _candidates()] == [("hard stem", "auto_rejected")]
+    assert len(hints.prompts) == 2
+
+
+def test_always_solved_draft_is_not_sent_to_hint_rescue(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=["FINAL: 4"] * 2, max_tune_rounds=0, _gen_provider=hints)
+    assert [r["status"] for r in results] == ["auto_rejected"]
+    assert hints.prompts == []          # hints make a question easier; this one is already easy
+
+
+def test_zero_hint_levels_switches_the_rescue_off(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER, max_tune_rounds=0, max_hint_levels=0,
+        _gen_provider=hints)
+    assert [r["status"] for r in results] == ["auto_rejected"] and hints.prompts == []
+
+
+def test_a_failed_retune_still_rescues_the_earlier_never_solved_draft(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))]]       # then the agent delivers nothing
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER + _HALF, max_tune_rounds=1, max_loops=1,
+        max_fix_iterations=0, _gen_provider=hints)
+    assert [(r["status"], r["rescued_level"]) for r in results] == [("pending", 1)]
+    assert [c["stem"] for c in _candidates()] == ["hinted stem 1"]
+
+
+def test_hint_ladder_stops_at_the_first_level_in_the_band():
+    from frontier_lens.generate.rescue import hint_ladder
+
+    hints = FakeHintProvider()
+    replies = iter(_NEVER + _HALF + ["FINAL: 4"] * 2)         # level 2 is in the band
+    ladder = hint_ladder(
+        "orig", "4", True, provider=hints, gen=NS(model="m", thinking=False, id="g"), k=2,
+        max_hints=3, failure_mode="x", hint_feedback="none", complete_fn=lambda _p: next(replies))
+    assert (ladder["rescued"], ladder["level"], ladder["stem"]) == (True, 2, "hinted stem 2")
+    assert [r["level"] for r in ladder["rounds"]] == [1, 2] and len(hints.prompts) == 2
+    assert hints.kwargs[0]["thinking"] is False
+
+
+def test_job_keeps_the_rescue_level_and_passes_the_hint_levels(monkeypatch):
+    from frontier_lens import jobs
+
+    got: dict = {}
+
+    def fake(seeds, *, log_fn, max_hint_levels, **kw):
+        got["max_hint_levels"] = max_hint_levels
+        log_fn("similar_result", source_id="seed1", candidate_id="c1", status="pending",
+               pass_rate=0.5, auto_reject_reason=None, rescued_level=2)
+
+    monkeypatch.setattr("frontier_lens.generate.generate_similar_react_review", fake)
+    monkeypatch.setattr(jobs, "_log_fn", lambda job_id, fmt, on_event: (
+        lambda event, **fields: on_event(event, fields)))
+    res = NS(items=[], skipped=[], add=lambda item, skipped=False: res.items.append(item))
+    jobs._run_augment("j", {"run_id": "r", "mode": "react_review", "seeds": [SEED], "n_each": 1,
+                            "calibration_k": 2, "max_loops": 3, "max_fix_iterations": 1,
+                            "max_tune_rounds": 0, "max_hint_levels": 2}, res)
+    assert got["max_hint_levels"] == 2 and [i["rescued_level"] for i in res.items] == [2]
+
+
+def test_job_log_shows_each_hint_level():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event("hint_attempt_result", level=2, n_correct=1, n=2, pass_rate=0.5,
+                                rl_suitable=True)
+    assert "hint level 2" in line and "1/2 solved" in line and "rescued" in line
+
+
+# ── a malformed tool call must not end the job ───────────────────────────
+
+def test_run_snippet_without_lang_runs_as_python():
+    from frontier_lens.agent.tools import handle
+
+    out = json.loads(handle("run_snippet", {"code": "print(4)\n"}, gen_id="g", fail_model=""))
+    assert out["ok"] is True and out["stdout"] == "4"      # Gemma 4 31B omitted `lang` in a real run
+
+
+def test_tool_calls_with_missing_or_wrong_arguments_return_an_error_instead_of_raising():
+    from frontier_lens.agent.tools import handle
+
+    for name, args in [("run_snippet", {}), ("run_snippet", {"lang": "python"}),
+                       ("check_similarity", []), ("submit_candidate", {"stem": "s"})]:
+        out = json.loads(handle(name, args, gen_id="g", fail_model=""))
+        assert "error" in out and name in out["error"], (name, args)
+
+
+def test_agent_survives_a_run_snippet_call_with_no_arguments(monkeypatch):
+    rounds = [[_call("1", "run_snippet", {})], [_call("2", "submit_draft", _draft())]]
+    results, client, _ = _run_react_review(rounds, [90], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"]
+    tool_msg = next(m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "tool")
+    assert "error" in json.loads(tool_msg["content"])      # the model is told what went wrong
+
+
+# ── the key must be something the grader can match ──────────────────────
+
+def test_keys_the_reward_can_never_match_are_rejected():
+    from frontier_lens.sandbox import execute
+
+    for out in ("1, 2", "3/4", "A and B", "yes or no", "[0, 1]"):
+        r = execute("python", f"print({out!r})\n", twice=True, single_line=True)
+        assert (r.ok, r.reason) == (False, "unmatchable_key"), out
+    for out in ("13", "-3.5", "abc", "1136689"):
+        assert execute("python", f"print({out!r})\n", twice=True, single_line=True).ok, out
+    assert execute("python", "print('1, 2')\n", twice=True).ok     # other callers are unchanged
+
+
+def test_candidate_with_an_unmatchable_key_is_auto_rejected():
+    _, row = _store("print('0, 1')\n")
+    assert (row["status"], row["auto_reject_reason"], row["executed_key"]) == (
+        "auto_rejected", "unmatchable_key", None)
+
+
+def test_agent_is_told_to_fix_a_key_with_a_comma(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft(code="print('1, 2')\n"))],
+              [_call("2", "submit_draft", _draft("fixed stem"))]]
+    results, client, judge = _run_react_review(rounds, [90], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"] and len(judge.prompts) == 1
+    fix = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "unmatchable_key" in fix["content"] and "single plain value" in fix["content"]
+
+
+def test_generation_prompts_ask_for_a_plain_single_value():
+    from frontier_lens.generate import prompts
+
+    for name in ("SIMILAR_QUESTION_PROMPT", "SIMILAR_FIX_PROMPT", "SIMILAR_AGENT_SYSTEM",
+                 "SIMILAR_AGENT_REVIEW_SYSTEM"):
+        assert "commas, slashes" in getattr(prompts, name), name
+
+
+# ── difficulty target: about half, close to the seed, small steps ───────
+
+def test_agent_prompt_aims_at_about_half_and_stays_close_to_the_seed(monkeypatch):
+    _, client, _ = _run_react_review([[_call("1", "submit_draft", _draft())]], [90], monkeypatch)
+    prompt = client.seen[0][0]["content"]
+    assert "about half the time" in prompt
+    assert "too hard is as bad as too easy" in prompt
+    assert "Stay close to the seed" in prompt and "the same kind of reasoning" in prompt
+    assert "slightly harder" in prompt and "one small step at a time" in prompt
+    assert "Use ONE, moderately" not in prompt and "(use ONE, moderately)" in prompt
+    assert "LONG EXACT COMPUTATION" not in prompt        # no longer pushed as 'the strongest lever'
+
+
+def test_levers_go_both_ways():
+    from frontier_lens.generate.prompts import HARDENING_LEVERS
+
+    assert "Harder" in HARDENING_LEVERS and "Easier (undo" in HARDENING_LEVERS
+
+
+# ── calibration grades a policy reply exactly like the Evaluate tab ─────
+
+# every reply is for a question whose key is "13"; the five that match are marked True
+_PANEL = [("FINAL: 13", True), ("Final: 13", True), ("FINAL: $13$", True), ("FINAL: \\boxed{13}", True),
+          ("FINAL: 13.0", True), ("FINAL: 13 points", False), ("FINAL: 12", False),
+          ("no final line here", False), ("FINAL: 1, 3", False), ("FINAL: 13 or 14", False)]
+
+
+_PANEL_STATE: dict = {"next": 0, "calls": []}
+_PANEL_LOCK = __import__("threading").Lock()
+
+
+class _PanelProvider:
+    """Answers every call with the next panel reply and records how it was called."""
+
+    def __init__(self, *a, **k):
+        pass
+
+    def complete(self, prompt, model, **kw):
+        with _PANEL_LOCK:
+            reply = _PANEL[_PANEL_STATE["next"] % len(_PANEL)][0]
+            _PANEL_STATE["next"] += 1
+            _PANEL_STATE["calls"].append({"prompt": prompt, "model": model, **kw})
+        return Completion(text=reply, latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+def test_calibration_and_evaluate_grade_the_same_replies_the_same_way(monkeypatch):
+    from frontier_lens import contest
+    from frontier_lens.generate import calibration
+    from frontier_lens.generate.calibration import _calibrate_collect
+
+    sync_models()
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO questions (id, topic, level, band, split, template, params_json, stem, "
+            "code, lang, input_files_json, key, numeric, source) VALUES "
+            "('q13', 't', 2, 'standard', 'train', 't', '{}', 'what is 6+7?', 'print(13)', 'python', "
+            "'{}', '13', 1, 'seed')"))
+    k = len(_PANEL)
+
+    # Evaluate: run_contest on the policy, k samples (no judge)
+    _PANEL_STATE.update(next=0, calls=[])
+    monkeypatch.setattr(contest, "OpenAICompatibleProvider", _PanelProvider)
+    run_id = contest.run_contest(["gemma4-26b-a4b"], k=k, question_ids=["q13"])
+    evaluate_calls = list(_PANEL_STATE["calls"])
+    with get_engine().connect() as conn:
+        evaluate_correct = conn.execute(
+            text("SELECT SUM(is_correct) FROM attempts WHERE run_id=:r"), {"r": run_id}).scalar()
+
+    # Generator calibration: the same replies, the same key, the same numeric flag
+    _PANEL_STATE.update(next=0, calls=[])
+    monkeypatch.setattr(calibration, "OpenAICompatibleProvider", _PanelProvider)
+    stats = _calibrate_collect("what is 6+7?", "13", True, k)
+    calibration_calls = list(_PANEL_STATE["calls"])
+
+    expected = sum(ok for _, ok in _PANEL)
+    assert (evaluate_correct, stats["correct"]) == (expected, expected) == (5, 5)
+    # same prompt, same model, same thinking flag and output cap, and neither uses the judge
+    assert {c["prompt"] for c in calibration_calls} == {c["prompt"] for c in evaluate_calls}
+    for field in ("model", "thinking", "max_tokens"):
+        assert {c[field] for c in calibration_calls} == {c[field] for c in evaluate_calls}, field
+    assert all(not c.get("skip_correction") for c in calibration_calls + evaluate_calls)
+
+
+def test_calibration_samples_the_runs_primary_model(monkeypatch):
+    """RL suitability is measured on the model the run was performed with, not the default policy."""
+    from frontier_lens.generate import calibration
+    from frontier_lens.generate.calibration import _calibrate_collect, calibrating_with
+
+    seen: list[str] = []
+
+    class _Rec:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, prompt, model, **kw):
+            seen.append(model)
+            return Completion(text="FINAL: 13", latency_ms=1, tokens_in=1, tokens_out=1)
+
+    monkeypatch.setattr(calibration, "OpenAICompatibleProvider", _Rec)
+    with calibrating_with("gemma2-27b"):
+        stats = _calibrate_collect("what is 6+7?", "13", True, 2)
+    assert stats["policy_model"] == "gemma2-27b"
+    assert set(seen) == {"google/gemma-2-27b-it"}
+    seen.clear()
+    assert _calibrate_collect("what is 6+7?", "13", True, 2)["policy_model"] == "gemma4-26b-a4b"
+    assert set(seen) == {"google/gemma-4-26b-a4b-it"}

@@ -12,6 +12,11 @@ from frontier_lens.sandbox import execute
 from .calibration import estimate_pass_rate
 from .utils import _extract_json
 
+# Modes whose calibrated candidates must land in the learnable band (0 < pass rate < 1):
+# a question the policy always or never solves gives RL no signal, so it is rejected
+# before it reaches the SME queue.
+BAND_FILTERED_MODES = ("one_shot", "similar_augment")
+
 
 def _store_candidate(
     raw: str,
@@ -27,7 +32,9 @@ def _store_candidate(
     complete_fn=None,
     log_fn=None,
     calibration_k: int | None = None,
+    precomputed_stats: dict | None = None,
 ) -> str:
+    """Store a generated candidate. *precomputed_stats* skips calibration (already measured)."""
     cid = uuid.uuid4().hex[:12]
     status = "pending"
     reason = None
@@ -53,7 +60,7 @@ def _store_candidate(
             topic = payload.get("topic") or ""
         if not band:
             band = payload.get("band") or ""
-        result = execute(lang, code, files, twice=True)
+        result = execute(lang, code, files, twice=True, single_line=True)
         if log_fn:
             log_fn("sandbox_result", ok=result.ok, reason=result.reason if not result.ok else None)
         if not result.ok:
@@ -61,14 +68,14 @@ def _store_candidate(
         else:
             key = result.stdout
             if rl_split == "train" and calibrate and status == "pending":
-                stats = estimate_pass_rate(
+                stats = precomputed_stats or estimate_pass_rate(
                     stem, key, numeric,
                     complete_fn=complete_fn, log_fn=log_fn,
                     k=calibration_k,
                 )
                 rate = stats["pass_rate"]
                 pak = stats["pass_at_k"]
-                if mode == "one_shot" and not stats["in_learnable_band"]:
+                if mode in BAND_FILTERED_MODES and not stats["in_learnable_band"]:
                     status, reason = "auto_rejected", "out_of_band"
     engine = get_engine()
     with engine.begin() as conn:

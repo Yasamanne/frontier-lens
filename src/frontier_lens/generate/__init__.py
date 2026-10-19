@@ -7,6 +7,7 @@ Public API is re-exported here so all existing import paths continue to work:
     from frontier_lens.generate import rescue_with_hints, generate_rescue_sft_csv
     from frontier_lens.generate import generate_similar_questions
     from frontier_lens.generate import generate_similar_react
+    from frontier_lens.generate import generate_similar_react_review
     from frontier_lens.generate import generate_similar_with_review
 
 Internal sub-modules:
@@ -41,6 +42,7 @@ from .similar import (
     _similar_agent_tools,
     generate_similar_questions,
     generate_similar_react,
+    generate_similar_react_review,
     generate_similar_with_review,
 )
 from .utils import _extract_json, _extract_stem_from_raw, _label_or_infer
@@ -77,6 +79,7 @@ __all__ = [
     # Similar
     "generate_similar_questions",
     "generate_similar_react",
+    "generate_similar_react_review",
     "generate_similar_with_review",
     # One-shot
     "propose_one_shot",

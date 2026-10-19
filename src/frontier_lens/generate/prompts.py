@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+# A generated question passes review at this total score (five criteria, 20 points each).
+# The code compares the score with it; the reviewer model does not decide pass or fail.
+REVIEW_PASS_SCORE = 75
+
 MAX_FIX_ITERATIONS = 3  # 3 fix iterations is enough for our shorter questions
 
 SIMILAR_REVIEW_PROMPT = """\
 You are a strict question quality reviewer. Score the GENERATED question on
-5 criteria (20 pts each, max 100). Pass threshold: 75.
+5 criteria (20 pts each, max 100). Pass threshold: {pass_score}.
 
 ══ SEED QUESTION (what this was generated from) ══
 {seed_stem}
@@ -28,8 +32,9 @@ Computed answer (from running the code): {computed_key}
 
 ══ CRITERIA ══
 
-1. CONCEPT ALIGNED (0–20): Tests the same skill/domain as the seed.
-   Same type of problem, same difficulty band ({band}).
+1. CONCEPT ALIGNED (0–20): Tests the same skill/domain as the seed. Same type
+   of problem. The difficulty may differ from the seed: do NOT take points off
+   for a harder or an easier variant.
 
 2. GENUINELY DISTINCT (0–20): Meaningfully different from the seed AND all
    prior variants. Changing only numbers = 0 pts. New scenario/structure = 20 pts.
@@ -40,8 +45,12 @@ Computed answer (from running the code): {computed_key}
 4. STEM CLARITY (0–20): Unambiguous question. Clear inputs, clear what is
    being asked. No missing information.
 
-5. DIFFICULTY APPROPRIATE (0–20): Neither trivially easy nor impossibly hard
-   for band={band}. The model should sometimes pass, sometimes fail.
+5. SELF-CONTAINED AND CONSISTENT (0–20): Everything needed is in the stem; it
+   can be solved by reasoning alone (no outside data or tools); and the question
+   asked is exactly what the verifier code computes.
+
+DIFFICULTY IS NOT SCORED. It is measured separately by sampling the policy model,
+so do not score it and do not list difficulty as an issue.
 
 SME feedback overrides your own taste: if the generated question repeats a
 problem SMEs flagged above, it must not pass (score at most 70) and that
@@ -50,13 +59,13 @@ problem must appear in "issues".
 Return JSON only:
 {{
   "score": <0-100 integer>,
-  "passed": <true if score >= 75>,
+  "passed": <true if score >= {pass_score}>,
   "criterion_scores": {{
     "concept_aligned": <0-20>,
     "genuinely_distinct": <0-20>,
     "answer_uniqueness": <0-20>,
     "stem_clarity": <0-20>,
-    "difficulty_appropriate": <0-20>
+    "self_contained": <0-20>
   }},
   "issues": ["<issue 1>", "<issue 2>"],
   "fix_instructions": "<specific paragraph telling the generator exactly what to change>"
@@ -88,12 +97,17 @@ Keep what was good; fix only what the reviewer flagged.
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true, "topic": "...", "band": "standard" or "hard"}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only.
 If topic or band are empty or unknown, infer them from the seed question:
-  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
-    fsm_queries, minimax, logic_grid.
+  topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+  otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+  python_state, shell_pipelines).
   band must be one of: standard, hard.
+The subject can be anything, including mathematics. For maths the code must compute the exact
+answer itself (counting, number theory, combinatorics, exact integer or decimal arithmetic).
+Do not write questions whose answer is a proof, an expression, an interval or a symbolic value,
+and do not rely on libraries that are not allowed.
 """
 
 _LEVEL_INSTRUCTIONS: dict[int, str] = {
@@ -164,12 +178,17 @@ The policy model should sometimes pass and sometimes fail (0 < pass_rate < 1).
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true, "topic": "...", "band": "standard" or "hard"}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 If Topic or Band above are empty or unknown, infer them from the seed question:
-  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
-    fsm_queries, minimax, logic_grid.
+  topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+  otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+  python_state, shell_pipelines).
   band must be one of: standard, hard.
+The subject can be anything, including mathematics. For maths the code must compute the exact
+answer itself (counting, number theory, combinatorics, exact integer or decimal arithmetic).
+Do not write questions whose answer is a proof, an expression, an interval or a symbolic value,
+and do not rely on libraries that are not allowed.
 """
 
 SIMILAR_AGENT_SYSTEM = """\
@@ -197,13 +216,20 @@ WORKFLOW (suggested):
   4. Call submit_candidate. Done.
 
 RULES:
-  - The answer must be a single bare value (numeric or short string).
+  - The answer must be a single bare value (a number or one short word), printed on one line.
+    Never a list, set, interval or pair: the grader cannot match answers with commas, slashes,
+    'and' or 'or'.
   - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
   - Python: only math, itertools, collections, decimal. No network, no external files.
   - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_candidate.
-    topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
-      fsm_queries, minimax, logic_grid.
+    topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+    otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+    python_state, shell_pipelines).
     band must be one of: standard, hard.
+  - The subject can be anything, including mathematics. For maths the code must compute the
+    exact answer itself (counting, number theory, combinatorics, exact integer or decimal
+    arithmetic). Do not write questions whose answer is a proof, an expression, an interval
+    or a symbolic value, and do not rely on libraries that are not allowed.
   - If TOPIC and BAND are already set above, you do NOT need to include them in submit_candidate.
 """
 
@@ -222,7 +248,7 @@ Band: {band}
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 Design the item to target the dominant failure mode listed above.
 The policy should neither always fail nor always pass (0 < pass_rate < 1).
@@ -235,6 +261,135 @@ Do not use any policy-model results. This item must not be calibrated to a polic
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
+"""
+
+
+SIMILAR_AGENT_REVIEW_SYSTEM = """\
+You are a question designer. Your task: write ONE new question that is similar in \
+style and difficulty to the SEED question below, but is genuinely distinct from it. \
+A strict reviewer will score your draft; if it fails you will get its feedback and revise.
+
+TOPIC: {topic}
+BAND:  {band}
+
+SEED QUESTION:
+{stem}
+
+Gold answer of the seed (known to you: use it to match difficulty, do NOT reveal it): {seed_key}
+
+PRIOR VARIANTS of this seed (yours must differ from ALL of them):
+{prior_variants}
+
+HUMAN REVIEWER (SME) FEEDBACK — what SMEs rejected and approved before. Do not repeat \
+the problems below; aim for what they approved:
+{sme_feedback}
+
+HOW THE POLICY MODEL (the model being trained) BEHAVES ON THIS SEED. Aim your question at
+this weakness:
+{policy_weakness}
+
+TARGET DIFFICULTY: the policy should solve your question about half the time (between a
+quarter and three quarters of its attempts). Questions it ALWAYS or NEVER solves are discarded,
+so too hard is as bad as too easy.
+  - Stay close to the seed: the same kind of reasoning and about the same number of steps.
+    Change the objects, numbers or setting. Do not turn it into a much longer, much more
+    open-ended or proof-like question.
+  - Use what the policy did on the seed (above): if it solved the seed most of the time, make
+    yours slightly harder; if it solved it rarely, keep yours about as hard or slightly easier.
+  - Your draft is tested on the policy right after review and you get the result. Moving
+    difficulty by one small step at a time works; big jumps overshoot.
+Ways to adjust difficulty (use ONE, moderately):
+{hardening_levers}
+
+AVAILABLE TOOLS (at most {max_loops} tool-call rounds per draft; the last round must be
+submit_draft, so leave room for it):
+  run_snippet      — run code in the sandbox; use it to check your verifier code
+  check_similarity — check your stem is not too close to existing questions
+  submit_draft     — send your draft for review. Call it ONCE per draft.
+
+WORKFLOW:
+  1. Draft a new question and its verifier code.
+  2. Call run_snippet: the code must run and print exactly one non-empty line, the same \
+on every run.
+  3. Call submit_draft. The reviewer then scores it; if it fails, its feedback arrives as \
+the next message and you revise (test again with run_snippet if you change the code).
+
+RULES:
+  - The answer must be a single bare value (a number or one short word), printed on one line.
+    Never a list, set, interval or pair: the grader cannot match answers with commas, slashes,
+    'and' or 'or'.
+  - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
+  - Python: only math, itertools, collections, decimal. No network, no external files.
+  - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_draft.
+    topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+    otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+    python_state, shell_pipelines).
+    band must be one of: standard, hard.
+  - The subject can be anything, including mathematics. For maths the code must compute the
+    exact answer itself (counting, number theory, combinatorics, exact integer or decimal
+    arithmetic). Do not write questions whose answer is a proof, an expression, an interval
+    or a symbolic value, and do not rely on libraries that are not allowed.
+"""
+
+SIMILAR_AGENT_FIX_MESSAGE = """\
+REVIEWER FEEDBACK — your draft FAILED (score {score}/100, pass mark {pass_score}).
+Issues: {issues}
+Fix instructions: {fix_instructions}
+
+Revise the question: keep what was good and change only what the reviewer flagged. The fix \
+must not reintroduce any problem from the SME feedback above. If you change the code, test \
+it with run_snippet, then call submit_draft again.
+"""
+
+
+HARDENING_LEVERS = """\
+  Harder (keep the seed's kind of reasoning):
+  - add one more condition the solver has to keep track of
+  - add one or two reasoning steps
+  - enlarge the input or the bounds moderately (your code still computes the exact answer)
+  - add one boundary case, off-by-one trap or rare special case
+  - replace a shortcut with a short case analysis
+  - add a realistic distractor detail that does not change the answer
+  Easier (undo some of the above): fewer steps or conditions, a smaller input, no trap."""
+
+SIMILAR_TUNE_HARDER_MESSAGE = """\
+CALIBRATION RESULT: the policy model solved your latest draft {correct}/{n} times (pass rate \
+{rate:.2f}). It is too easy: RL needs questions the policy solves sometimes but not always.
+
+YOUR DRAFTS SO FAR AND HOW THE POLICY DID:
+{history}
+
+HOW THE POLICY SOLVED YOUR LATEST DRAFT (one of its correct replies, shortened):
+{trace}
+{escalation}
+Make the question somewhat harder so that this approach no longer works every time. Keep the \
+same kind of reasoning as the seed and exactly one unambiguous answer. Apply {step_size} from \
+this list:
+{hardening_levers}
+Aim for a question the policy solves about half the time. Test the new code with run_snippet, \
+then call submit_draft again.
+"""
+
+SIMILAR_TUNE_ESCALATION = """\
+{n_easy} drafts in a row were solved every time, so take a bigger step than before. Still stay \
+with the seed's kind of reasoning: a question far harder than the seed would overshoot and \
+nobody could solve it.
+"""
+
+SIMILAR_TUNE_EASIER_MESSAGE = """\
+CALIBRATION RESULT: the policy model solved your latest draft 0/{n} times. Its answers were: \
+{policy_answers}. Your code computed: {key}.
+
+YOUR DRAFTS SO FAR AND HOW THE POLICY DID:
+{history}
+
+First check that the question is correct: does the stem ask exactly what the code computes, \
+with one unambiguous answer? If something is wrong, fix it. If it is correct but too hard, \
+make an EASIER version. If an earlier draft of yours was solved every time, the right \
+question lies BETWEEN that one and this one: undo roughly half of what you changed (fewer \
+steps or conditions, a smaller input, or remove a trap) instead of going back to it. \
+Aim for a question the policy solves about half the time. Test the new code with \
+run_snippet, then call submit_draft again.
 """

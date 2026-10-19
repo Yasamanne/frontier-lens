@@ -56,3 +56,48 @@ def _extract_stem_from_raw(raw: str) -> str:
         return _extract_json(raw).get("stem", raw[:400])
     except Exception:
         return raw[:400]
+
+
+def reason_label(reason: str | None, pass_rate: float | None) -> str:
+    """Plain wording for a reject reason.
+
+    ``out_of_band`` is about the policy's pass rate (always or never solved), not about how
+    the candidate compares with its seed.
+    """
+    if reason == "out_of_band":
+        if pass_rate is not None and pass_rate >= 1:
+            return "too easy: the policy solved every sample"
+        if pass_rate is not None and pass_rate <= 0:
+            return "never solved: the policy got no sample right"
+        return "out of the learnable band"
+    return reason or "—"
+
+
+def generator_extra_body(gen) -> dict:
+    """OpenRouter request switch that applies the generator's ``thinking`` setting.
+
+    ``thinking: true`` turns reasoning on and ``false`` turns it off. Without an explicit
+    switch the model's own default applies (some models think, some do not), so the
+    ``thinking`` flag in models.yaml would have no effect.
+    """
+    base_url = getattr(gen, "base_url", None)
+    if base_url and "openrouter.ai" not in base_url:
+        return {}  # the switch is OpenRouter's; other servers may reject an unknown field
+    return {"reasoning": {"enabled": bool(getattr(gen, "thinking", False))}}
+
+
+def generator_kwargs(gen) -> dict:
+    """Keyword arguments for ``provider.complete`` that apply the generator's thinking setting."""
+    return {"thinking": bool(getattr(gen, "thinking", False)), "extra_body": generator_extra_body(gen)}
+
+
+# A thinking call can take minutes (Gemma 4 31B with thinking on: 66-190 s, up to ~12 minutes
+# when the provider is busy). With a shorter timeout the SDK silently retries the whole
+# call, so a job looks stuck while it keeps restarting the same request.
+THINKING_TIMEOUT_SEC = 900
+DEFAULT_TIMEOUT_SEC = 120
+
+
+def generator_timeout(gen) -> float:
+    """Seconds to wait for one generator call."""
+    return THINKING_TIMEOUT_SEC if getattr(gen, "thinking", False) else DEFAULT_TIMEOUT_SEC

@@ -28,6 +28,19 @@
   quant: host
   thinking: false
   license: Apache-2.0 / Gemma Terms of Use (check model card)
+- id: gemma2-27b
+  role: reference
+  family: gemma
+  provider: openai_compatible
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: google/gemma-2-27b-it
+  quant: host
+  thinking: false
+  # Its context window is only 8,192 tokens (prompt and reply together), so the output cap
+  # stays well below the 16,000 used for the policy.
+  max_tokens: 4096
+  license: Gemma Terms of Use (check model card)
 - id: qwen3.8-27b
   role: reference
   family: qwen
@@ -58,16 +71,18 @@
   quant: host
   thinking: false
   license: Llama 4 Community License
-- id: deepseek-v4.1-flash-generator
+- id: gemma4-31b-generator
   role: generator
-  family: deepseek
+  family: gemma
   provider: openai_compatible
   base_url: https://openrouter.ai/api/v1
   api_key_env: OPENROUTER_API_KEY
-  model: deepseek/deepseek-v4.1-flash
+  model: google/gemma-4-31b-it
   quant: host
-  thinking: false
-  license: MIT
+  # Applied to every generator call as OpenRouter's reasoning switch (see
+  # generate.utils.generator_extra_body). Note: same family as the policy.
+  thinking: true
+  license: Apache-2.0 / Gemma Terms of Use (check model card)
 - id: deepseek-v4.1-flash-judge
   role: judge
   family: deepseek

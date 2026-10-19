@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from sqlalchemy import text
 
@@ -109,7 +110,7 @@ def tools_for(rl_split: str) -> list[dict]:
     return BASE_TOOLS + [ESTIMATE_TOOL]
 
 
-def handle(
+def _dispatch(
     name: str,
     args: dict,
     *,
@@ -124,7 +125,8 @@ def handle(
         if rl_split != "train":
             return json.dumps({"error": "eval split must not call the policy"})
         result = execute(
-            args["lang"], args["code"], args.get("input_files") or {}, twice=True
+            args.get("lang") or "python", args["code"], args.get("input_files") or {},
+            twice=True, single_line=True,
         )
         if not result.ok:
             return json.dumps({"ok": False, "reason": result.reason})
@@ -157,7 +159,10 @@ def handle(
             ).mappings().all()
         return json.dumps([{"stem": r["stem"][:500], "acc": r["acc"]} for r in rows])
     if name == "run_snippet":
-        result = execute(args["lang"], args["code"], args.get("input_files") or {}, twice=True)
+        result = execute(
+            args.get("lang") or "python", args["code"], args.get("input_files") or {},
+            twice=True, single_line=True,
+        )
         return json.dumps({"ok": result.ok, "stdout": result.stdout, "reason": result.reason})
     if name == "check_similarity":
         stem = set((args.get("stem") or "").lower().split())
@@ -197,3 +202,17 @@ def handle(
         )
         return json.dumps({"candidate_id": cid})
     return json.dumps({"error": f"unknown tool {name}"})
+
+
+def handle(name: str, args: dict, **kwargs) -> str:
+    """Run one tool call and return its JSON result.
+
+    A call the model got wrong (a missing argument, the wrong type) comes back as an error
+    message it can correct; it must never raise, because that would end a long job.
+    """
+    try:
+        return _dispatch(name, args, **kwargs)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        # Most often the model's arguments; the traceback is kept in case it is a real bug.
+        logging.getLogger(__name__).warning("tool %s failed", name, exc_info=True)
+        return json.dumps({"error": f"bad arguments for {name}: {type(exc).__name__}: {exc}"})

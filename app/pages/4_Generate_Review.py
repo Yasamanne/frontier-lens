@@ -57,12 +57,12 @@ engine = get_engine()
 from frontier_lens import job_panel, jobs
 from frontier_lens.failure_analysis import rl_suitable_questions, zero_pass_questions
 from frontier_lens.feedback import REASONS
+from frontier_lens.generate.utils import reason_label
 from frontier_lens.feedback import context_for as sme_feedback_for
 
 # ── Run / model selectors ─────────────────────────────────────────────────
 with engine.connect() as conn:
-    _all_runs   = conn.execute(text("SELECT id, created_at FROM eval_runs WHERE status='complete' ORDER BY created_at DESC")).all()
-    _all_models = conn.execute(text("SELECT DISTINCT model_id FROM attempts")).scalars().all()
+    _all_runs = conn.execute(text("SELECT id, created_at FROM eval_runs WHERE status='complete' ORDER BY created_at DESC")).all()
 
 if not _all_runs:
     st.info("No completed eval runs yet. Run an evaluation first.")
@@ -77,6 +77,15 @@ _run_id = st.selectbox(
     ),
     key="gen_run_sel2",
 )
+# Only models that have samples in the chosen run.
+with engine.connect() as conn:
+    _all_models = conn.execute(
+        text("SELECT DISTINCT model_id FROM attempts WHERE run_id = :r ORDER BY 1"),
+        {"r": _run_id},
+    ).scalars().all()
+if not _all_models:
+    st.info("This run has no samples yet.")
+    st.stop()
 _pol_id   = policy_spec().id
 _def_mi   = list(_all_models).index(_pol_id) if _pol_id in list(_all_models) else 0
 _model_id = st.selectbox("Model", list(_all_models), index=_def_mi, key="gen_model_sel2")
@@ -111,7 +120,7 @@ for s in sus:
 # Both run in a detached process (frontier_lens.jobs) and save each finished
 # item to the database, so refreshing or leaving this page does not stop them.
 _active_jobs = {r["kind"]: r for r in jobs.active(("rescue", "augment"))}
-_AUG_MODES = {"🎯 One-shot": "one_shot", "🤖 ReAct agent": "react", "🔄 Generate + Review": "review"}
+_AUG_MODES = {"🎯 One-shot": "one_shot", "🤖 ReAct agent + Review": "react_review"}
 
 
 def _job_section(kind: str, unit: str, render_results) -> None:
@@ -172,6 +181,8 @@ def _render_augment_results(row: dict) -> None:
     st.dataframe(
         [{"source_id": r["source_id"][:14], "candidate_id": r["candidate_id"],
           "status": r["status"],
+          "reason": (f"rescued with a level-{r['rescued_level']} hint" if r.get("rescued_level")
+                     else reason_label(r.get("reason"), r.get("pass_rate"))),
           "pass_rate": round(r["pass_rate"], 3) if r["pass_rate"] is not None else None}
          for r in results],
         width="stretch",
@@ -246,7 +257,8 @@ st.divider()
 st.subheader("🟡 RL-suitable augmentation  (0 < correct < k)")
 st.caption(
     "Questions already in the learnable band. The generator produces similar-but-distinct "
-    "questions. RL-suitable ones land in the SME Queue below."
+    "questions. Each is calibrated on the policy: candidates the policy always or never "
+    "solves are rejected automatically (`out_of_band`); only in-band ones land in the SME Queue below."
 )
 
 rl_qs = rl_suitable_questions(_run_id, _model_id)
@@ -279,37 +291,65 @@ else:
         )
         aug_mode = st.radio(
             "Generation mode",
-            ["🎯 One-shot", "🤖 ReAct agent", "🔄 Generate + Review"],
-            index=2,
+            ["🎯 One-shot", "🤖 ReAct agent + Review"],
+            index=1,
             horizontal=True, key="aug_mode",
             help=(
-                "**One-shot**: single LLM call.  "
-                "**ReAct agent**: iterative with run_snippet + check_similarity.  "
-                "**Generate + Review**: generator → reviewer → fix loop (up to 3 fix cycles). "
-                "Reviewer scores on 5 criteria; must reach 75/100 to pass. "
-                "Generator knows the seed's gold answer and prior variants."
+                "**One-shot**: a single LLM call per candidate.  "
+                "**ReAct agent + Review**: the generator works as an agent (it tests its code "
+                "with run_snippet and checks similarity), then a reviewer scores the draft on "
+                "5 quality criteria (difficulty is not scored: it is measured on the policy); "
+                "below 75/100 the feedback goes back into the same conversation "
+                "and the agent revises. Then the policy is sampled on the draft: if it solves "
+                "it every time or never, that result goes back to the agent to tune the "
+                "difficulty. The generator knows the seed's gold answer, how the policy "
+                "behaves on the seed, the earlier variants of the seed, and what SMEs "
+                "rejected and approved on other samples."
             ),
         )
         aug_loops = None
         aug_fix_iters = None
-        if aug_mode == "🤖 ReAct agent":
-            aug_loops = st.slider("Max agent loops", 1, 6, 3, key="aug_loops")
-        elif aug_mode == "🔄 Generate + Review":
-            aug_fix_iters = st.slider(
+        aug_tune = None
+        aug_hints = 3
+        if aug_mode == "🤖 ReAct agent + Review":
+            col_loops, col_fix, col_tune = st.columns(3)
+            aug_loops = col_loops.slider(
+                "Max agent loops per draft", 1, 6, 3, key="aug_loops",
+                help="Tool-call rounds the agent may use before it must submit a draft.",
+            )
+            aug_fix_iters = col_fix.slider(
                 "Max fix iterations", 1, 4, 3, key="aug_fix_iters",
-                help="How many times the generator can revise after reviewer feedback."
+                help="How many times the agent can revise after reviewer feedback.",
+            )
+            aug_tune = col_tune.slider(
+                "Max difficulty-tuning rounds", 0, 3, 2, key="aug_tune_rounds",
+                help="After the reviewer passes a draft, the policy is sampled on it. If it solves "
+                     "it every time (or never), the result goes back to the agent, which writes a "
+                     "harder (or corrected/easier) version. 0 = no tuning, a candidate outside "
+                     "the learnable band is simply rejected.",
             )
 
+        aug_hints = st.slider(
+            "Hint levels for never-solved questions", 0, 3, 3, key="aug_hint_levels",
+            help="A new question the policy never solves (0 correct) goes to the dead-zone "
+                 "rescue: up to this many progressive hints (framing, technique, common "
+                 "mistake), calibrated after each. The first level that lands in the band "
+                 "becomes an SME candidate with the hinted stem. 0 = reject such questions.",
+        )
+
         _total_cands = int(aug_limit) * int(aug_each)
-        if aug_mode == "🎯 One-shot":
-            _est = _total_cands * (1 + int(aug_k))
-        elif aug_mode == "🤖 ReAct agent":
-            _est = _total_cands * (int(aug_loops or 3) + int(aug_k))
-        else:  # Generate + Review
-            # (1 gen + 1 review) × fix_iters + k calibration
-            _est = _total_cands * ((int(aug_fix_iters or 3) + 1) * 2 + int(aug_k))
+        if aug_mode == "🎯 One-shot":  # worst case adds the hint rescue: 1 hint call + k samples per level
+            _est = _total_cands * ((1 + int(aug_k)) + int(aug_hints) * (1 + int(aug_k)))
+        else:  # ReAct agent + Review, worst case: (tune + 1) rounds, each up to (fix + 1) drafts
+            # of loops + 1 review calls, plus k policy samples to calibrate the round's draft
+            _est = _total_cands * (
+                (int(aug_tune if aug_tune is not None else 2) + 1)
+                * ((int(aug_fix_iters or 3) + 1) * (int(aug_loops or 3) + 1) + int(aug_k))
+                + int(aug_hints) * (1 + int(aug_k))   # rescue: 1 hint call + k samples per level
+            )
         st.caption(
-            f"~{_est} API calls ({_total_cands} candidate(s)) ≈ **{round(_est*_AVG/60,1)} min**"
+            f"up to ~{_est} API calls ({_total_cands} candidate(s)) ≈ "
+            f"**{round(_est*_AVG/60,1)} min** worst case; most candidates need far fewer"
         )
 
         if st.button(
@@ -327,6 +367,9 @@ else:
                     "calibration_k": int(aug_k),
                     "max_loops": int(aug_loops or 3),
                     "max_fix_iterations": int(aug_fix_iters or 3),
+                    "max_tune_rounds": int(aug_tune if aug_tune is not None else 2),
+                    "max_hint_levels": int(aug_hints),
+                    "model_id": _model_id,
                 },
                 planned=len(seeds) * int(aug_each),
             )

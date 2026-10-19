@@ -90,6 +90,16 @@ def policy_spec() -> ModelSpec:
     return next(s for s in specs if s.role == "policy")
 
 
+def model_spec(model_id: str | None = None) -> ModelSpec:
+    """The spec of *model_id* (a policy or reference model); the policy when None."""
+    if not model_id:
+        return policy_spec()
+    for s in load_yaml():
+        if s.id == model_id:
+            return s
+    raise KeyError(f"unknown model {model_id!r} in models.yaml")
+
+
 def contest_specs() -> list[ModelSpec]:
     return [s for s in load_yaml() if s.role in {"policy", "reference"}]
 

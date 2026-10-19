@@ -27,6 +27,7 @@ from sqlalchemy import text
 from frontier_lens import runstate
 from frontier_lens.config import LOGS_DIR
 from frontier_lens.db import get_engine
+from frontier_lens.generate.utils import reason_label
 from frontier_lens.runlog import write_op_event
 
 TABLE = "op_jobs"
@@ -191,7 +192,19 @@ def format_augment_event(event: str, **f) -> str:
         rate_str = f"{rate:.2f}" if rate is not None else "n/a"
         icon = "✅" if f.get("status") == "pending" else "❌"
         rev = f" [review={f.get('review_score')}]" if f.get("review_score") else ""
-        return f"  {icon} cand={f.get('candidate_id', '?')} status={f.get('status')} pass_rate={rate_str}{rev}"
+        why = (f" ({reason_label(f.get('auto_reject_reason'), rate)})"
+               if f.get("auto_reject_reason") else "")
+        return (f"  {icon} cand={f.get('candidate_id', '?')} status={f.get('status')} "
+                f"pass_rate={rate_str}{rev}{why}")
+    if event == "hint_attempt_result":
+        verdict = "in band: rescued ✓" if f.get("rl_suitable") else "not yet"
+        return (f"  💡 hint level {f.get('level')}: {f.get('n_correct')}/{f.get('n')} "
+                f"solved on {f.get('policy_model', '?')}, pass_rate={f.get('pass_rate', 0):.2f}, {verdict}")
+    if event == "tune_result":
+        verdict = "in band ✓" if f.get("in_band") else "out of band, asking the agent to retune"
+        return (f"  🎯 calibration (round {f.get('round', 0)}): {f.get('n_correct')}/{f.get('n')} "
+                f"solved on {f.get('policy_model', '?')}, pass_rate={f.get('pass_rate', 0):.2f}, "
+                f"{verdict}")
     if event == "similar_end":
         return f"\n[DONE] pending={f.get('n_pending')}/{f.get('n_total')}"
     if event == "review_generate":
@@ -209,6 +222,9 @@ def format_augment_event(event: str, **f) -> str:
     if event == "review_fix":
         issues = "; ".join(str(i) for i in f.get("issues", []))[:120]
         return f"\n  🔧 Fix iter {f.get('fix_iter')}: score was {f.get('score')} — issues: {issues}"
+    if event == "agent_call":
+        wait = " (thinking can take several minutes)" if f.get("thinking") else ""
+        return f"  ⏳ step {f.get('step')}: waiting for the generator model{wait}…"
     if event == "agent_tool_call":
         return f"  ↳ step {f.get('step')} tool={f.get('tool')}"
     if event == "agent_end":
@@ -267,6 +283,7 @@ def _log_fn(job_id: str, fmt: Callable[..., str], on_event: Callable[..., bool])
 
 def _run_rescue(job_id: str, cfg: dict, res: _Results) -> None:
     from frontier_lens.generate import rescue_with_hints
+    from frontier_lens.generate.calibration import calibrating_with
 
     finished = {r["question_id"] for r in res.items} | {r["question_id"] for r in res.skipped}
     todo = [qid for qid in cfg["question_ids"] if qid not in finished]
@@ -282,19 +299,22 @@ def _run_rescue(job_id: str, cfg: dict, res: _Results) -> None:
                     skipped=True)
         return False
 
-    rescue_with_hints(
-        cfg["run_id"], cfg["model_id"], todo,
-        log_fn=_log_fn(job_id, format_rescue_event, on_event),
-        calibration_k=cfg["calibration_k"], max_hints=cfg["max_hints"],
-    )
+    with calibrating_with(cfg["model_id"]):
+        rescue_with_hints(
+            cfg["run_id"], cfg["model_id"], todo,
+            log_fn=_log_fn(job_id, format_rescue_event, on_event),
+            calibration_k=cfg["calibration_k"], max_hints=cfg["max_hints"],
+        )
 
 
 def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
     from frontier_lens.generate import (
         generate_similar_questions,
         generate_similar_react,
+        generate_similar_react_review,
         generate_similar_with_review,
     )
+    from frontier_lens.generate.calibration import calibrating_with
 
     n_each = cfg["n_each"]
     have = Counter(r["source_id"] for r in res.items)
@@ -313,21 +333,34 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
                 "candidate_id": fields.get("candidate_id") or "",
                 "status": fields.get("status"),
                 "pass_rate": fields.get("pass_rate"),
+                "reason": fields.get("auto_reject_reason"),
+                "rescued_level": fields.get("rescued_level"),
             })
         return False
 
     log_fn = _log_fn(job_id, format_augment_event, on_event)
-    for missing, seeds in sorted(by_missing.items()):
-        common = {"run_id": cfg["run_id"], "n_each": missing,
-                  "log_fn": log_fn, "calibration_k": cfg["calibration_k"]}
-        if cfg["mode"] == "review":
-            generate_similar_with_review(
-                seeds, max_fix_iterations=cfg["max_fix_iterations"], **common
-            )
-        elif cfg["mode"] == "react":
-            generate_similar_react(seeds, max_loops=cfg["max_loops"], **common)
-        else:
-            generate_similar_questions(seeds, **common)
+    # Generated questions are judged RL-suitable on the run's primary model.
+    with calibrating_with(cfg.get("model_id")):
+        for missing, seeds in sorted(by_missing.items()):
+            common = {"run_id": cfg["run_id"], "n_each": missing,
+                      "log_fn": log_fn, "calibration_k": cfg["calibration_k"]}
+            if cfg["mode"] == "react_review":
+                generate_similar_react_review(
+                    seeds, max_loops=cfg["max_loops"],
+                    max_fix_iterations=cfg["max_fix_iterations"],
+                    max_tune_rounds=cfg.get("max_tune_rounds", 2),
+                    max_hint_levels=cfg.get("max_hint_levels", 3),
+                    model_id=cfg.get("model_id"), **common,
+                )
+            elif cfg["mode"] == "review":
+                generate_similar_with_review(
+                    seeds, max_fix_iterations=cfg["max_fix_iterations"], **common
+                )
+            elif cfg["mode"] == "react":
+                generate_similar_react(seeds, max_loops=cfg["max_loops"], **common)
+            else:
+                generate_similar_questions(
+                    seeds, max_hint_levels=cfg.get("max_hint_levels", 3), **common)
 
 
 def _run_calibrate(job_id: str, cfg: dict, res: _Results) -> None:

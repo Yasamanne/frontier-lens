@@ -168,8 +168,43 @@ def run_shell(command: str, input_files: dict[str, str] | None = None) -> Sandbo
         return _run(["/bin/sh", "-c", pipeline], cwd)
 
 
+def _require_single_line(result: SandboxResult) -> SandboxResult:
+    """Fail a successful run whose stdout is not exactly one non-empty line."""
+    if not result.stdout:
+        return SandboxResult(False, "", "prints nothing", "empty_output")
+    if "\n" in result.stdout:
+        return SandboxResult(False, result.stdout, "more than one line", "multi_line_output")
+    from frontier_lens.reward import is_degenerate
+
+    if is_degenerate(result.stdout):  # the reward scores such answers 0, even a correct one
+        return SandboxResult(
+            False, result.stdout,
+            "answers with a comma, slash, 'and' or 'or' can never be matched", "unmatchable_key")
+    return result
+
+
 def execute(
-    lang: str, code: str, input_files: dict[str, str] | None = None, twice: bool = True
+    lang: str,
+    code: str,
+    input_files: dict[str, str] | None = None,
+    twice: bool = True,
+    *,
+    single_line: bool = False,
+) -> SandboxResult:
+    """Run *code*; with ``single_line=True`` its output must be one plain value.
+
+    Generated questions use ``single_line=True``: the stdout is the gold key, which the
+    prompts promise is a single bare value. Empty output, several lines, or an answer the
+    reward can never match (a comma, slash, "and"/"or" scores 0 even when right) is rejected
+    (``empty_output`` / ``multi_line_output`` / ``unmatchable_key``) instead of becoming a
+    key nobody can match.
+    """
+    result = _execute(lang, code, input_files, twice)
+    return _require_single_line(result) if single_line and result.ok else result
+
+
+def _execute(
+    lang: str, code: str, input_files: dict[str, str] | None, twice: bool
 ) -> SandboxResult:
     runner = run_python if lang == "python" else run_shell
     try:
