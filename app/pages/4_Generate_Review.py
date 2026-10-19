@@ -162,7 +162,7 @@ def _render_augment_results(row: dict) -> None:
 
 # ── Dead-zone rescue (pass@k = 0) ─────────────────────────────────────────
 st.divider()
-st.subheader("🔴 Dead-zone rescue  (pass@k = 0)")
+st.subheader("🔴 Dead-zone rescue  (pass rate = 0)")
 st.caption(
     "Questions the model **never** answers correctly across all k attempts. "
     "The generator adds progressive hints (L1→L2→L3), calibrates after each level, "
@@ -172,7 +172,7 @@ st.caption(
 
 dead_qs = zero_pass_questions(_run_id, _model_id)
 if not dead_qs:
-    st.info("No pass@k=0 questions found for this run/model.")
+    st.info("No questions with pass rate 0 found for this run/model. Questions flagged for SME review on the Evaluate page appear here after an SME marks them valid.")
 else:
     st.caption(f"**{len(dead_qs)}** question(s) with 0/{dead_qs[0]['n']} correct.")
     st.dataframe(

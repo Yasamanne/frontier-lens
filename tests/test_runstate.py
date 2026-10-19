@@ -237,7 +237,7 @@ def test_key_edit_regrades_stored_attempts(tmp_db):
     assert flag == 0
 
 
-def test_zero_pass_lists_uncoded_questions_only_on_request(tmp_db):
+def test_zero_pass_lists_uncoded_questions_unless_excluded(tmp_db):
     from frontier_lens.failure_analysis import zero_pass_questions
 
     _add_question(tmp_db, "up", "B")  # uploaded: empty code
@@ -249,8 +249,8 @@ def test_zero_pass_lists_uncoded_questions_only_on_request(tmp_db):
                 "raw_output, is_correct, unparsable) VALUES ('r', 'm', 'up', 1, 'FINAL: A', 0, 0)"
             )
         )
-    assert zero_pass_questions("r", "m") == []
-    assert [q["id"] for q in zero_pass_questions("r", "m", include_uncoded=True)] == ["up"]
+    assert [q["id"] for q in zero_pass_questions("r", "m")] == ["up"]
+    assert zero_pass_questions("r", "m", include_uncoded=False) == []
 
 
 def test_sme_validated_key_is_not_reflagged(tmp_db):
@@ -335,3 +335,44 @@ def test_only_one_run_can_start_at_a_time(tmp_db, monkeypatch):
     # Once the first run finishes, the next one may start.
     runstate.finish(first, "complete")
     assert eval_job.launch(old) == 4242
+
+
+def test_uncoded_question_is_rescued_with_a_hint_and_approved_with_its_own_key(tmp_db, monkeypatch):
+    """A pass-rate-0 uploaded question (no verifier code) gets hints and can be approved."""
+    import json
+
+    from frontier_lens.generate import rescue
+    from frontier_lens.review import promote
+
+    _add_question(tmp_db, "up", "42")
+    runstate.insert_run("r", ["up"], 2, None, {}, status="complete")
+    for i in range(2):
+        _add_attempt(tmp_db, "r", "up", i, 0)
+
+    class _Gen:
+        def __init__(self, *a, **k):
+            pass
+
+        def complete(self, prompt, model, **kw):
+            return Completion(
+                text=json.dumps({"stem": "stem up Hint: think about sums.", "hint": "think about sums"}),
+                latency_ms=1, tokens_in=1, tokens_out=1,
+            )
+
+    replies = iter(["FINAL: 42", "FINAL: 7"])  # one of two samples right: in the band
+    monkeypatch.setattr(rescue, "OpenAICompatibleProvider", _Gen)
+
+    results = rescue.rescue_with_hints(
+        "r", POLICY, ["up"], complete_fn=lambda prompt: next(replies), calibration_k=2, max_hints=1,
+    )
+
+    assert results[0]["rl_suitable"] and results[0]["candidate_id"]
+    cid = results[0]["candidate_id"]
+    promote(cid, "hard_item", fair=True, novel=True, hard=True, kind="sme_queue")
+    with tmp_db.connect() as conn:
+        status = conn.execute(text("SELECT status FROM candidates WHERE id=:c"), {"c": cid}).scalar()
+        q = conn.execute(
+            text("SELECT key, code FROM questions WHERE source='generated'")
+        ).mappings().first()
+    assert status == "approved"
+    assert q["key"] == "42" and q["code"] == ""
