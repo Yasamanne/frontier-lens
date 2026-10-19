@@ -211,15 +211,13 @@ def zero_pass_questions(
     model_id: str,
     split: str = "train",
     *,
-    include_uncoded: bool = False,
+    include_uncoded: bool = True,
 ) -> list[dict]:
-    """Return questions where the model got 0 correct across ALL k attempts (pass@k = 0).
+    """Return questions where the model got 0 correct across ALL k attempts (pass rate = 0).
 
-    By default only returns questions with non-empty verifier code — uploaded
-    questions with hardcoded keys (empty code, multiple-choice answers like
-    ``$B$``) are excluded because the sandbox cannot re-run them and rescue
-    calibration will always return 0. Pass ``include_uncoded=True`` to list them
-    too (they can never be rescued, so they belong straight in the SFT pool).
+    Uploaded questions with a hardcoded key (empty verifier code) are included: hints are
+    calibrated against the stored key, which needs no code. Pass ``include_uncoded=False``
+    to list only questions that have verifier code.
 
     Each entry::
 

@@ -187,12 +187,6 @@ def _rescue_with_hints(
                  question_id=qid, reason="not_found")
             return None
 
-        if not (q.get("code") or "").strip():
-            _log("rescue_question_skip", index=i + 1, total=len(question_ids),
-                 question_id=qid,
-                 reason="no_verifier_code — uploaded/multiple-choice question")
-            return None
-
         fa = failure_modes(run_id, model_id, q["topic"], q["band"])
         dominant = fa.get("dominant_mode", "unknown")
 
@@ -235,7 +229,7 @@ def _rescue_with_hints(
             candidate_id = _store_hinted_candidate(
                 source_qid=qid,
                 hinted_stem=ladder["stem"],
-                code=q["code"], lang=q["lang"], files=files,
+                code=q["code"] or "", lang=q["lang"] or "python", files=files,
                 key=q["key"], numeric=bool(q["numeric"]),
                 topic=q["topic"], band=q["band"],
                 gen_id=gen.id, stats=ladder["stats"],

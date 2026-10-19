@@ -11,7 +11,7 @@ from frontier_lens.db import get_engine
 from frontier_lens.ids import item_id
 from frontier_lens.parse import normalize
 from frontier_lens.reward import FINAL_RE_V2, HEDGE_RE, REWARD_FN, last_final
-from frontier_lens.sandbox import execute
+from frontier_lens.sandbox import SandboxResult, execute
 from frontier_lens.stats import wilson_interval
 
 DEFECT_LABELS = {"rejected", "broken_item", "trivial"}
@@ -254,7 +254,13 @@ def promote(
             )
             return
         files = json.loads(cand["input_files_json"] or "{}")
-        result = execute(cand["lang"], code_to_use, files, twice=True, single_line=True)
+        if (code_to_use or "").strip():
+            result = execute(cand["lang"], code_to_use, files, twice=True, single_line=True)
+        else:
+            # No verifier code (an uploaded question rescued with a hint): the question's
+            # own key is the gold answer, there is nothing to re-run.
+            result = SandboxResult(bool(cand["executed_key"]), cand["executed_key"] or "",
+                                   "", "" if cand["executed_key"] else "no_key")
         if not result.ok:
             conn.execute(
                 text(
