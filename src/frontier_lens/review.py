@@ -254,7 +254,7 @@ def promote(
             )
             return
         files = json.loads(cand["input_files_json"] or "{}")
-        result = execute(cand["lang"], code_to_use, files, twice=True)
+        result = execute(cand["lang"], code_to_use, files, twice=True, single_line=True)
         if not result.ok:
             conn.execute(
                 text(

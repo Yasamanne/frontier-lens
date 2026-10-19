@@ -124,7 +124,8 @@ def handle(
         if rl_split != "train":
             return json.dumps({"error": "eval split must not call the policy"})
         result = execute(
-            args["lang"], args["code"], args.get("input_files") or {}, twice=True
+            args["lang"], args["code"], args.get("input_files") or {}, twice=True,
+            single_line=True,
         )
         if not result.ok:
             return json.dumps({"ok": False, "reason": result.reason})
@@ -157,7 +158,9 @@ def handle(
             ).mappings().all()
         return json.dumps([{"stem": r["stem"][:500], "acc": r["acc"]} for r in rows])
     if name == "run_snippet":
-        result = execute(args["lang"], args["code"], args.get("input_files") or {}, twice=True)
+        result = execute(
+            args["lang"], args["code"], args.get("input_files") or {}, twice=True, single_line=True
+        )
         return json.dumps({"ok": result.ok, "stdout": result.stdout, "reason": result.reason})
     if name == "check_similarity":
         stem = set((args.get("stem") or "").lower().split())

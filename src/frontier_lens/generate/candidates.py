@@ -58,7 +58,7 @@ def _store_candidate(
             topic = payload.get("topic") or ""
         if not band:
             band = payload.get("band") or ""
-        result = execute(lang, code, files, twice=True)
+        result = execute(lang, code, files, twice=True, single_line=True)
         if log_fn:
             log_fn("sandbox_result", ok=result.ok, reason=result.reason if not result.ok else None)
         if not result.ok:

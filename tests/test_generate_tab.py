@@ -122,3 +122,62 @@ def test_generate_page_lists_only_the_models_of_the_selected_run():
     at.selectbox(key="gen_run_sel2").select("run_old").run()
     assert not at.exception
     assert list(at.selectbox(key="gen_model_sel2").options) == ["gemma4-31b"]
+
+
+# ── the gold key must be one non-empty line ─────────────────────────────
+
+def _raw(code):
+    return json.dumps(
+        {"stem": "what number?", "lang": "python", "code": code, "input_files": {}, "numeric": True}
+    )
+
+
+def _store(code):
+    replies = iter(["FINAL: 4", "FINAL: 9"])  # half right, so a valid candidate is in the band
+    cid = _store_candidate(
+        _raw(code), "python_state", "hard", "gen", "similar_augment", ["src"],
+        calibrate=True, complete_fn=lambda _p: next(replies), calibration_k=2,
+    )
+    with get_engine().connect() as conn:
+        return cid, conn.execute(
+            text("SELECT status, auto_reject_reason, executed_key FROM candidates WHERE id=:i"),
+            {"i": cid},
+        ).mappings().one()
+
+
+def test_candidate_whose_code_prints_nothing_is_auto_rejected():
+    _, row = _store("x = 1 + 1\n")
+    assert (row["status"], row["auto_reject_reason"], row["executed_key"]) == (
+        "auto_rejected", "empty_output", None)
+
+
+def test_candidate_whose_code_prints_several_lines_is_auto_rejected():
+    _, row = _store("print(1)\nprint(2)\n")
+    assert (row["status"], row["auto_reject_reason"]) == ("auto_rejected", "multi_line_output")
+
+
+def test_agent_run_snippet_reports_a_bad_output_to_the_model():
+    from frontier_lens.agent.tools import handle
+
+    out = json.loads(
+        handle("run_snippet", {"lang": "python", "code": "print(1)\nprint(2)\n"},
+               gen_id="g", fail_model="")
+    )
+    assert out["ok"] is False and out["reason"] == "multi_line_output"
+
+
+def test_approving_a_candidate_with_bad_output_does_not_promote_it():
+    from frontier_lens.review import promote
+
+    cid, _ = _store("print(4)\n")  # a good pending candidate...
+    with get_engine().begin() as conn:  # ...whose code is then edited to print two lines
+        conn.execute(text("UPDATE candidates SET code='print(1)\nprint(2)\n' WHERE id=:i"), {"i": cid})
+    promote(cid, "hard_item", fair=True, novel=True, hard=True)
+    with get_engine().connect() as conn:
+        status, reason = conn.execute(
+            text("SELECT status, auto_reject_reason FROM candidates WHERE id=:i"), {"i": cid}
+        ).one()
+        n_questions = conn.execute(
+            text("SELECT COUNT(*) FROM questions WHERE source='generated'")
+        ).scalar()
+    assert (status, reason, n_questions) == ("auto_rejected", "multi_line_output", 0)

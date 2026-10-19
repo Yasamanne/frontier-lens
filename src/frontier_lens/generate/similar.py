@@ -581,7 +581,7 @@ def generate_similar_with_review(
                 lang_gen  = payload.get("lang") or "python"
                 files_gen = payload.get("input_files") or {}
 
-                sandbox_result = execute(lang_gen, code_gen, files_gen, twice=True)
+                sandbox_result = execute(lang_gen, code_gen, files_gen, twice=True, single_line=True)
                 _log("review_sandbox", index=idx, fix_iter=fix_iter,
                      ok=sandbox_result.ok, reason=sandbox_result.reason)
 
@@ -589,7 +589,10 @@ def generate_similar_with_review(
                     review_result = {
                         "score": 0, "passed": False,
                         "issues": [f"Sandbox error: {sandbox_result.reason}"],
-                        "fix_instructions": "Fix the code so it runs without errors and produces a deterministic answer.",
+                        "fix_instructions": (
+                            "Fix the code so it runs without errors and prints exactly one "
+                            "non-empty line, the same on every run."
+                        ),
                         "criterion_scores": {},
                     }
                     continue
