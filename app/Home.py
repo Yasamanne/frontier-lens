@@ -182,9 +182,8 @@ _missing_keys = [k for k in ("OPENROUTER_API_KEY",) if not os.getenv(k)]
 if _missing_keys:
     st.warning(
         f"**Missing env vars:** `{'`, `'.join(_missing_keys)}`  \n"
-        "Live LLM calls will fail. "
-        "Fixture-replay and Viewer mode still work.  \n"
-        "Set them in `.env` and restart, or pass `--env-file .env` to Docker.",
+        "Live model calls are unavailable until the API key is configured. "
+        "Viewing existing data still works.",
         icon="⚠️",
     )
 
@@ -293,15 +292,9 @@ for col, (num, icon, name, desc, href) in zip(cols, steps):
 </a>
 """, unsafe_allow_html=True)
 
-# ── Quick-start ───────────────────────────────────────────────────────────
-st.markdown("### Quick start")
-st.code(
-    "# 1. Generate seed questions (182 items, 7 topics)\n"
-    "uv run python -m frontier_lens.seed\n\n"
-    "# 2. (Optional) calibrate difficulty knobs to your model\n"
-    "uv run python -m frontier_lens.calibrate --live\n"
-    "uv run python -m frontier_lens.seed --force\n\n"
-    "# 3. Run evaluation (or use the Evaluate page)\n"
-    "uv run python -m frontier_lens.contest --live --models YOUR_MODEL_ID --k 8 --levels 2 3",
-    language="bash",
+# ── Getting started ───────────────────────────────────────────────────────
+st.markdown("### Getting started")
+st.markdown(
+    "Open **Seed** to load or upload questions, run **Evaluate** to measure a model, "
+    "then use **Gap Analysis** and **Generate** to find weak spots and build new questions."
 )
