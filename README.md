@@ -42,7 +42,7 @@ Seed (procedural templates → sandbox keys)  ──►  Evaluate (policy k=8, r
 | **Seed** | Builds the procedural bank (7 topics × 26 = 182 items: L1 harness, L2 standard, L3 hard). Calibrates the L2/L3 difficulty knobs against the policy. Uploads CSV/JSONL question sets, with exact and near-duplicate detection. |
 | **Evaluate** | Scores the policy and reference models k times per item. Optional LLM answer-equivalence judge, and a verifier model on items every model failed. Runs in the background with a live progress panel, Stop and Resume. Downloads CSV and logs. |
 | **Gap Analysis** | Histogram of per-item policy pass rates; topic × band heatmap (a cell is "weak" only if its Wilson upper bound is below the model's mean); failure modes (unparsable, off-by-one, consistent-wrong, high-variance, hedge). |
-| **Generate** | **Rescue** of pass@k=0 items with progressive hints (L1 framing → L2 technique → L3 common mistake), recalibrating after each. **Augmentation** of in-band items in three modes. The **SME queue** for approve/reject with reasons, notes and edits. |
+| **Generate** | **Rescue** of pass@k=0 items with progressive hints (L1 framing → L2 technique → L3 common mistake), recalibrating after each. **Augmentation** of in-band items (One-shot, or a ReAct agent + Review) with each draft sampled on the run's primary model, tuned toward a learnable pass rate, and rescued with hints if the model never solves it. The **SME queue** for approve/reject with reasons, notes and edits. |
 | **Dataset** | RL-ready pool, SFT pool (unrescuable items with their failed responses), and an SME review tab. |
 | **Headroom** | Baseline RL-suitable items vs approved new items: yield per generation mode, rescue rate, pass-rate distribution. |
 
@@ -148,7 +148,7 @@ All open-weight, called through [OpenRouter](https://openrouter.ai) with one Ope
 | Generator | Gemma 4 31B, thinking on |
 | Judge | DeepSeek V4.1 Flash |
 
-The generator shares a family with the policy, and the judge with one reference. This is allowed with a warning; see Limitations.
+The generator (Gemma 4 31B) shares a family with the policy, and the judge (DeepSeek V4.1 Flash) with one reference. This is allowed with a warning; see Limitations.
 
 ## Key design decisions
 
@@ -167,6 +167,11 @@ The generator shares a family with the policy, and the judge with one reference.
   - Each family's eval items come from its own `{topic}_eval` template: seeds 10000–10003, vs 0–7 for train.
   - Eval generation never sees policy results.
   - The eval export drops policy pass rates.
+- **Generated questions are tuned to the learnable band, on the right model.**
+  - A generator agent drafts a question and tests its code; a reviewer scores it (pass mark 75 of 100, difficulty not scored).
+  - The run's primary model, not the generator, is then sampled k times with the same prompt and grader as Evaluate.
+  - Solved every time or never: the result goes back to the agent for a small step toward about half. Never solved: progressive hints, as in the dead-zone rescue.
+  - A final pass rate of exactly 0 or 1 is rejected as `out_of_band`; anything in between goes to the SME queue.
 - **Human review is sampled and reused.**
   - An audit samples the pending pool and accepts it only if the Wilson upper bound of the defect rate is below 10%.
   - Every SME review records reasons (ambiguous, wrong key, too easy, answer leak, …), a note and any edit.
@@ -187,6 +192,8 @@ The generator shares a family with the policy, and the judge with one reference.
 - **Hand-written Python "gotchas" → procedural generators.** Difficulty now comes from step length and state, not tricks (`docs/known-gotchas.md`). The topics grew from 4 to 7.
 - **Contest/Results pages → today's six pages.** The current pages are Seed, Evaluate, Gap Analysis, Generate, Dataset and Headroom.
 - **In-page runs → resumable background jobs.** A page refresh used to kill an evaluation.
+- **One generator call → agent + review + measured difficulty.** One-shot generation from seeds mostly gave questions the policy always solved, or never solved, so few landed in the learnable band. The generator is now an agent that tests its code, a reviewer checks quality, and the measured pass rate on the primary model drives retuning and hint rescue.
+- **Generating from seeds alone → adding upload.** Generated data built from the procedural seeds was not at the desired learnable rate, so uploading existing question sets (CSV/JSONL) was added as a second source of questions.
 - **Stems of rejected variants → structured SME feedback.** Reasons, notes and rewrites now feed the generator and the AI reviewer.
 
 ## Results so far
@@ -207,9 +214,9 @@ From the local database (Oct 15–17, 36 evaluation runs with samples, 700 grade
 
 ## Testing and validation
 
-- **90 pytest tests** (`uv run pytest`) cover:
+- **187 pytest tests** (`uv run pytest`) cover:
   - the reward (last FINAL only, hedges) and parsing;
-  - sandbox bans;
+  - sandbox bans and the single-line, matchable-key checks for generated questions;
   - pass@k, Wilson and learnable-band edges;
   - split leakage, and that **every topic has held-out eval items**;
   - re-executing every seed key;
@@ -219,7 +226,8 @@ From the local database (Oct 15–17, 36 evaluation runs with samples, 700 grade
   - the audit and promotion gates;
   - failure analysis;
   - background jobs (reap, claim, resume, ownership);
-  - the SME feedback loop.
+  - the SME feedback loop;
+  - the generation pipeline (agent, review pass mark, difficulty tuning, hint rescue), and that calibration grades replies the same way as Evaluate and samples the run's primary model.
 
   Model calls are faked, so tests cost nothing.
 - **CI** (GitHub Actions): `uv sync --frozen`, ruff, pytest, and a failure if `.env` is tracked.
@@ -233,11 +241,11 @@ From the local database (Oct 15–17, 36 evaluation runs with samples, 700 grade
 - **Evidence is proxy only.** Pass rates, band share and review results, not a training delta.
 - **Small samples.** k=8 per item, about 8 items per heatmap cell, one probe item per calibration point: intervals are wide. With k=8, an item whose true pass rate is 0.05 still lands in the band about a third of the time.
 - **Eval is near-distribution.** It comes from the same generators on held-out seeds, not unseen task types.
-- **Judge bias.** The generator, the AI reviewer and the optional answer judge are the same model as one reference.
+- **Generator and judge bias.** The generator is in the same family as the policy and as two references, so it may write in a style the policy finds familiar. The AI reviewer and the optional answer judge are DeepSeek V4.1 Flash, the same model as one reference.
 - **Reward edge cases.**
   - Answers containing `,` or `/` (e.g. `1,234`, `3/4`) score 0.
   - The optional LLM judge makes the reward non-deterministic.
-  - Calibration samples the policy with thinking on, evaluation with thinking off.
+  - Generated questions whose key would hit this rule (a comma, slash, "and" or "or") are rejected before review (`unmatchable_key`).
 - **The sandbox is a validator, not isolation.** It uses an AST and shlex allowlist, a 2 s timeout, and no CPU, memory or network limits.
 - **Human data.** One annotator (the builder), no agreement statistics. The audit flow is in code and tests but not yet in the UI.
 - **Ops.** No authentication, and `SPEND_CAP_USD` is read but not enforced: a public deployment can spend the API key. SQLite allows a single writer. Model calls have no hard total deadline (provider keep-alives can stall a call). Some older tests use the real `data/` database.
@@ -246,11 +254,14 @@ From the local database (Oct 15–17, 36 evaluation runs with samples, 700 grade
 ## Next steps
 
 1. Evaluate the full seed bank (all 7 topics, train and eval), then run a small **GRPO/LoRA training run with TRL** on `rl_tasks.jsonl`. Measure on `eval_tasks.jsonl` against a random-selection baseline, and report a null result if that is what comes out.
-2. Fix the reward edge cases (commas, fractions) and match the thinking mode between calibration and evaluation.
+2. Fix the reward edge cases (commas, fractions), so exact matches are checked before the hedge rule.
 3. Use adaptive k: keep sampling until the interval clears 0 and 1. Use larger calibration probes.
 4. Add a second annotator and Cohen's κ. Wire the audit into the UI. Measure whether SME feedback lowers rejection rates over time.
 5. Use a judge from a different model family, and measure judge–SME agreement.
 6. Add container isolation for the sandbox, Postgres, authentication and a job queue for multi-user use.
+7. **Seeds are a research area of their own.** Which seeds, how many, and how their difficulty is set decide what the generator can produce at the learnable band. Better seed selection is a follow-up study.
+8. **Deeper failure analysis.** Failure modes today are coarse (format, off-by-one, hedging, consistent-wrong, high-variance). A finer analysis would score responses against rubrics and compare the reasoning of correct samples with that of failed samples on the same question, to find where the reasoning diverges. Those findings could be fed to the generator so new questions target the policy's specific reasoning gaps.
+9. **Other data formats.** Measuring a policy, finding the learnable band, and generating or rescuing questions is the core idea here, built for question-and-answer data. The same idea should apply to Harbor-format tasks.
 
 ## Tools used, including AI
 
