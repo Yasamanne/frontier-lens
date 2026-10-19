@@ -510,3 +510,59 @@ def test_a_failed_retune_keeps_the_earlier_measured_draft(monkeypatch):
     assert [(r["status"], r["reason"], r["pass_rate"]) for r in results] == [
         ("auto_rejected", "out_of_band", 1.0)]
     assert [(c["stem"], c["status"]) for c in _candidates()] == [("first stem", "auto_rejected")]
+
+
+# ── the reviewer: pass mark is enforced in code, and difficulty is not scored ──
+
+class _StubReviewer:
+    def __init__(self, reply):
+        self.reply, self.prompt = reply, ""
+
+    def complete(self, prompt, model, **kw):
+        self.prompt = prompt
+        return Completion(text=json.dumps(self.reply), latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+def _review(reply):
+    reviewer = _StubReviewer(reply)
+    result = similar._review_similar_question(
+        stem="g", code="print(4)", lang="python", computed_key="4", seed_stem="s", seed_key="7",
+        band="standard", prior_stems=[], provider=reviewer, model="m", sme_feedback="none",
+    )
+    return result, reviewer
+
+
+def test_review_pass_is_decided_by_the_score_not_by_the_models_own_flag():
+    from frontier_lens.generate.prompts import REVIEW_PASS_SCORE
+
+    assert REVIEW_PASS_SCORE == 75
+    cases = [(74, True, False), (75, False, True), (95, False, True), (70, True, False),
+             (0, True, False), (250, False, True)]
+    for score, model_says_passed, expected in cases:
+        result, _ = _review({"score": score, "passed": model_says_passed, "issues": []})
+        assert result["passed"] is expected, (score, model_says_passed)
+    assert _review({"score": 250})[0]["score"] == 100          # scores are clamped to 0..100
+
+
+def test_reviewer_prompt_states_the_pass_mark_and_does_not_score_difficulty():
+    _, reviewer = _review({"score": 80})
+    p = reviewer.prompt
+    assert "Pass threshold: 75." in p and "true if score >= 75" in p
+    assert "DIFFICULTY IS NOT SCORED" in p
+    assert "do NOT take points off" in p and "harder or an easier variant" in p
+    assert "difficulty band" not in p and "difficulty_appropriate" not in p
+    assert "self_contained" in p and "SELF-CONTAINED AND CONSISTENT" in p
+
+
+def test_a_harder_variant_is_not_failed_for_its_difficulty(monkeypatch):
+    # the reviewer's own flag says "failed" but the score clears the mark, so the draft goes on
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    sync_models()
+    monkeypatch.setattr(similar, "sme_feedback_for", lambda *a, **k: "none")
+    replies = iter(["FINAL: 4", "FINAL: 9"] * 2)
+    results = similar.generate_similar_react_review(
+        [SEED], max_loops=3, calibration_k=2, complete_fn=lambda _p: next(replies),
+        _client=FakeAgentClient(rounds), max_tune_rounds=0,
+        _judge_provider=_StubReviewer({"score": 88, "passed": False, "issues": []}),
+    )
+    assert [r["status"] for r in results] == ["pending"]

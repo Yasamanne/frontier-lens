@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+# A generated question passes review at this total score (five criteria, 20 points each).
+# The code compares the score with it; the reviewer model does not decide pass or fail.
+REVIEW_PASS_SCORE = 75
+
 MAX_FIX_ITERATIONS = 3  # 3 fix iterations is enough for our shorter questions
 
 SIMILAR_REVIEW_PROMPT = """\
 You are a strict question quality reviewer. Score the GENERATED question on
-5 criteria (20 pts each, max 100). Pass threshold: 75.
+5 criteria (20 pts each, max 100). Pass threshold: {pass_score}.
 
 ══ SEED QUESTION (what this was generated from) ══
 {seed_stem}
@@ -28,8 +32,9 @@ Computed answer (from running the code): {computed_key}
 
 ══ CRITERIA ══
 
-1. CONCEPT ALIGNED (0–20): Tests the same skill/domain as the seed.
-   Same type of problem, same difficulty band ({band}).
+1. CONCEPT ALIGNED (0–20): Tests the same skill/domain as the seed. Same type
+   of problem. The difficulty may differ from the seed: do NOT take points off
+   for a harder or an easier variant.
 
 2. GENUINELY DISTINCT (0–20): Meaningfully different from the seed AND all
    prior variants. Changing only numbers = 0 pts. New scenario/structure = 20 pts.
@@ -40,8 +45,12 @@ Computed answer (from running the code): {computed_key}
 4. STEM CLARITY (0–20): Unambiguous question. Clear inputs, clear what is
    being asked. No missing information.
 
-5. DIFFICULTY APPROPRIATE (0–20): Neither trivially easy nor impossibly hard
-   for band={band}. The model should sometimes pass, sometimes fail.
+5. SELF-CONTAINED AND CONSISTENT (0–20): Everything needed is in the stem; it
+   can be solved by reasoning alone (no outside data or tools); and the question
+   asked is exactly what the verifier code computes.
+
+DIFFICULTY IS NOT SCORED. It is measured separately by sampling the policy model,
+so do not score it and do not list difficulty as an issue.
 
 SME feedback overrides your own taste: if the generated question repeats a
 problem SMEs flagged above, it must not pass (score at most 70) and that
@@ -50,13 +59,13 @@ problem must appear in "issues".
 Return JSON only:
 {{
   "score": <0-100 integer>,
-  "passed": <true if score >= 75>,
+  "passed": <true if score >= {pass_score}>,
   "criterion_scores": {{
     "concept_aligned": <0-20>,
     "genuinely_distinct": <0-20>,
     "answer_uniqueness": <0-20>,
     "stem_clarity": <0-20>,
-    "difficulty_appropriate": <0-20>
+    "self_contained": <0-20>
   }},
   "issues": ["<issue 1>", "<issue 2>"],
   "fix_instructions": "<specific paragraph telling the generator exactly what to change>"
@@ -313,7 +322,7 @@ RULES:
 """
 
 SIMILAR_AGENT_FIX_MESSAGE = """\
-REVIEWER FEEDBACK — your draft FAILED (score {score}/100, pass mark 75).
+REVIEWER FEEDBACK — your draft FAILED (score {score}/100, pass mark {pass_score}).
 Issues: {issues}
 Fix instructions: {fix_instructions}
 

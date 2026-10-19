@@ -20,6 +20,7 @@ from .candidates import _store_candidate
 from .prompts import (
     HARDENING_LEVERS,
     MAX_FIX_ITERATIONS,
+    REVIEW_PASS_SCORE,
     SIMILAR_AGENT_FIX_MESSAGE,
     SIMILAR_AGENT_REVIEW_SYSTEM,
     SIMILAR_AGENT_SYSTEM,
@@ -67,13 +68,16 @@ def _review_similar_question(
         band=band,
         prior_variants=prior_block,
         sme_feedback=sme_feedback,
+        pass_score=REVIEW_PASS_SCORE,
     )
     completion = provider.complete(prompt, model, skip_correction=True)
     try:
         payload = _extract_json(completion.text)
+        score = max(0, min(100, int(payload.get("score", 0))))
         return {
-            "score": int(payload.get("score", 0)),
-            "passed": bool(payload.get("passed", False)),
+            "score": score,
+            # The code decides pass or fail from the score; the model's own flag is ignored.
+            "passed": score >= REVIEW_PASS_SCORE,
             "criterion_scores": payload.get("criterion_scores", {}),
             "issues": payload.get("issues", []),
             "fix_instructions": payload.get("fix_instructions", ""),
@@ -663,7 +667,7 @@ def generate_similar_with_review(
                 cid = None
                 status = "review_failed"
                 rate = None
-                reject_reason = f"did not reach score ≥ 75 in {max_fix_iterations + 1} attempts"
+                reject_reason = f"did not reach score ≥ {REVIEW_PASS_SCORE} in {max_fix_iterations + 1} attempts"
 
             _log("similar_result", source_id=q["id"], candidate_id=cid or "",
                  status=status, pass_rate=rate, auto_reject_reason=reject_reason,
@@ -901,7 +905,7 @@ def generate_similar_react_review(
        (``feedback.context_for``: what SMEs rejected and approved on other samples), how the
        policy behaves on this seed, and ways to raise difficulty.
     2. The draft's code runs in the sandbox (twice, one non-empty line of output).
-    3. The reviewer (judge model) scores five criteria; 75 of 100 passes. A failed draft sends
+    3. The reviewer (judge model) scores five criteria; REVIEW_PASS_SCORE (75) of 100 passes. A failed draft sends
        the reviewer's issues back into the same conversation, up to *max_fix_iterations*.
     4. A reviewed draft is calibrated on the policy. In the band (0 < pass rate < 1): stored.
        Otherwise the measured result goes back to the agent ("too easy: make it harder" or
@@ -985,6 +989,7 @@ def generate_similar_react_review(
                     else:
                         messages.append({"role": "user", "content": SIMILAR_AGENT_FIX_MESSAGE.format(
                             score=review_result.get("score", 0),
+                            pass_score=REVIEW_PASS_SCORE,
                             issues="; ".join(review_result.get("issues", [])) or "(none listed)",
                             fix_instructions=review_result.get("fix_instructions", ""),
                         )})
@@ -1074,7 +1079,7 @@ def generate_similar_react_review(
                         cid, status, rate, reject_reason = store(*last_calibrated)
                     else:
                         reject_reason = (
-                            f"did not reach score >= 75 in {max_fix_iterations + 1} drafts"
+                            f"did not reach score >= {REVIEW_PASS_SCORE} in {max_fix_iterations + 1} drafts"
                         )
                     break
 
