@@ -32,7 +32,9 @@ def _retryable(exc: BaseException) -> bool:
 
 
 class OpenAICompatibleProvider:
-    def __init__(self, base_url: str, api_key_env: str | None = None) -> None:
+    def __init__(
+        self, base_url: str, api_key_env: str | None = None, timeout: float = 120
+    ) -> None:
         key = "ollama"
         if api_key_env:
             key = os.getenv(api_key_env) or ""
@@ -45,7 +47,7 @@ class OpenAICompatibleProvider:
                 "X-Title": "Frontier Lens",
             }
         self.client = OpenAI(
-            base_url=base_url, api_key=key, timeout=120, default_headers=headers
+            base_url=base_url, api_key=key, timeout=timeout, default_headers=headers
         )
 
     def _call(

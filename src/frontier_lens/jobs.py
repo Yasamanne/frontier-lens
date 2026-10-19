@@ -217,6 +217,9 @@ def format_augment_event(event: str, **f) -> str:
     if event == "review_fix":
         issues = "; ".join(str(i) for i in f.get("issues", []))[:120]
         return f"\n  🔧 Fix iter {f.get('fix_iter')}: score was {f.get('score')} — issues: {issues}"
+    if event == "agent_call":
+        wait = " (thinking can take several minutes)" if f.get("thinking") else ""
+        return f"  ⏳ step {f.get('step')}: waiting for the generator model{wait}…"
     if event == "agent_tool_call":
         return f"  ↳ step {f.get('step')} tool={f.get('tool')}"
     if event == "agent_end":

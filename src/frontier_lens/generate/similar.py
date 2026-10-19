@@ -37,6 +37,7 @@ from .utils import (
     _label_or_infer,
     generator_extra_body,
     generator_kwargs,
+    generator_timeout,
 )
 
 
@@ -144,7 +145,7 @@ def _run_similar_agent(
                     model=gen.model,
                     messages=messages,
                     tools=toolset,
-                    timeout=120,
+                    timeout=generator_timeout(gen),
                     extra_body=generator_extra_body(gen),
                 )
         except Exception as exc:
@@ -266,7 +267,9 @@ def generate_similar_questions(
     gen = next((m for m in specs.values() if m.role == "generator"), None)
     if gen is None:
         raise RuntimeError("No generator model configured in models.yaml.")
-    provider = OpenAICompatibleProvider(gen.base_url or "", gen.api_key_env)
+    provider = OpenAICompatibleProvider(
+        gen.base_url or "", gen.api_key_env, timeout=generator_timeout(gen)
+    )
     engine = get_engine()
 
     total = len(source_questions) * n_each
@@ -393,7 +396,9 @@ def generate_similar_react(
         raise RuntimeError("No generator model configured in models.yaml.")
 
     api_key = _os.getenv(gen.api_key_env or "", "") if gen.api_key_env else "ollama"
-    client = OpenAI(base_url=gen.base_url, api_key=api_key or "ollama", timeout=120)
+    client = OpenAI(
+        base_url=gen.base_url, api_key=api_key or "ollama", timeout=generator_timeout(gen)
+    )
 
     engine = get_engine()
     total = len(source_questions) * n_each
@@ -524,7 +529,9 @@ def generate_similar_with_review(
             "Add a judge entry to use Generate+Review mode."
         )
 
-    gen_provider   = OpenAICompatibleProvider(gen.base_url or "", gen.api_key_env)
+    gen_provider   = OpenAICompatibleProvider(
+        gen.base_url or "", gen.api_key_env, timeout=generator_timeout(gen)
+    )
     judge_provider = OpenAICompatibleProvider(judge.base_url or "", judge.api_key_env)
 
     engine = get_engine()
@@ -787,7 +794,8 @@ def _agent_draft(
     def call_model(extra: dict, tools: list[dict]):
         with call_slot():
             return client.chat.completions.create(
-                model=gen.model, messages=messages, tools=tools, timeout=120,
+                model=gen.model, messages=messages, tools=tools,
+                timeout=generator_timeout(gen),
                 extra_body=generator_extra_body(gen), **extra,
             )
 
@@ -816,6 +824,7 @@ def _agent_draft(
         return draft
 
     for step in range(max_loops):
+        log_fn("agent_call", step=step + 1, thinking=bool(getattr(gen, "thinking", False)))
         try:
             # Last round: only submit_draft is on offer (tool_choice alone is not honoured by
             # every model), so the agent cannot spend it on another test.
@@ -835,6 +844,7 @@ def _agent_draft(
             return draft
 
     # No draft yet: one extra, forced call.
+    log_fn("agent_call", step=max_loops + 1, thinking=bool(getattr(gen, "thinking", False)))
     messages.append({"role": "user", "content": "Submit your final draft now by calling "
                      "submit_draft with stem, lang, code, topic and band."})
     try:
@@ -982,7 +992,9 @@ def generate_similar_react_review(
     client = _client
     if client is None:
         api_key = _os.getenv(gen.api_key_env or "", "") if gen.api_key_env else "ollama"
-        client = OpenAI(base_url=gen.base_url, api_key=api_key or "ollama", timeout=120)
+        client = OpenAI(
+            base_url=gen.base_url, api_key=api_key or "ollama", timeout=generator_timeout(gen)
+        )
     judge_provider = _judge_provider or OpenAICompatibleProvider(
         judge.base_url or "", judge.api_key_env
     )

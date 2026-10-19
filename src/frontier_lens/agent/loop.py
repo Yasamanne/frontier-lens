@@ -9,7 +9,7 @@ from frontier_lens.agent.budget import MAX_STEPS
 from frontier_lens.agent.tools import handle, tools_for
 from frontier_lens.feedback import context_for as sme_feedback_for
 from frontier_lens.generate import _eval_cells
-from frontier_lens.generate.utils import generator_extra_body
+from frontier_lens.generate.utils import generator_extra_body, generator_timeout
 from frontier_lens.heatmap import weakest_cell
 from frontier_lens.registry import sync_models
 
@@ -26,7 +26,9 @@ def propose_agent(
     key = os.getenv(gen.api_key_env or "", "") if gen.api_key_env else "ollama"
     if gen.api_key_env and not key:
         raise RuntimeError(f"missing {gen.api_key_env}")
-    client = OpenAI(base_url=gen.base_url, api_key=key or "ollama", timeout=120)
+    client = OpenAI(
+        base_url=gen.base_url, api_key=key or "ollama", timeout=generator_timeout(gen)
+    )
     toolset = tools_for(rl_split)
     if rl_split == "eval":
         cells = _eval_cells()

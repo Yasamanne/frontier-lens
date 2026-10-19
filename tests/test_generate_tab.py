@@ -637,3 +637,57 @@ def test_every_agent_call_carries_the_generators_reasoning_switch(monkeypatch):
     _, client, _ = _run_react_review(rounds, [90], monkeypatch)
     assert client.kwargs and all(
         kw["extra_body"] == {"reasoning": {"enabled": True}} for kw in client.kwargs)
+
+
+# ── thinking calls are slow: long timeout and a visible "waiting" line ───
+
+def test_generator_timeout_covers_a_thinking_call():
+    from frontier_lens.generate.utils import generator_timeout
+
+    assert generator_timeout(NS(thinking=True)) == 900     # Gemma 4 31B thinking: 66-190 s, more under load
+    assert generator_timeout(NS(thinking=False)) == 120
+    assert generator_timeout(NS()) == 120                  # a spec without the flag
+
+
+def test_provider_accepts_a_timeout(monkeypatch):
+    from frontier_lens.providers.openai_compatible import OpenAICompatibleProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    assert OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY").client.timeout == 120
+    slow = OpenAICompatibleProvider("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", timeout=900)
+    assert slow.client.timeout == 900
+
+
+def test_agent_calls_use_the_long_timeout_and_log_each_wait(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    rounds = [[_call("1", "run_snippet", {"lang": "python", "code": "print(4)\\n"})],
+              [_call("2", "submit_draft", _draft())]]
+    _, client, _ = _run_react_review(
+        rounds, [90], monkeypatch, log_fn=lambda event, **f: events.append((event, f)))
+    assert [kw["timeout"] for kw in client.kwargs] == [900, 900]   # the generator thinks
+    waits = [f for e, f in events if e == "agent_call"]
+    assert [(w["step"], w["thinking"]) for w in waits] == [(1, True), (2, True)]
+
+
+def test_generator_providers_get_the_long_timeout(monkeypatch):
+    seen: list[float] = []
+
+    class RecordingProvider:
+        def __init__(self, base_url, api_key_env=None, timeout=120):
+            seen.append(timeout)
+
+        def complete(self, prompt, model, **kw):
+            return Completion(text="not json", latency_ms=1, tokens_in=1, tokens_out=1)
+
+    sync_models()
+    monkeypatch.setattr(similar, "OpenAICompatibleProvider", RecordingProvider)
+    similar.generate_similar_questions([SEED], calibration_k=2)
+    assert seen == [900]
+
+
+def test_job_log_shows_that_it_is_waiting_for_the_generator():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event("agent_call", step=2, thinking=True)
+    assert "step 2" in line and "waiting for the generator" in line and "several minutes" in line
+    assert "several minutes" not in format_augment_event("agent_call", step=1, thinking=False)

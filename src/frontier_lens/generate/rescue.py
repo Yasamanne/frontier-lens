@@ -14,7 +14,7 @@ from frontier_lens.registry import sync_models
 from .calibration import _calibrate_collect
 from .candidates import _store_hinted_candidate
 from .prompts import _LEVEL_INSTRUCTIONS, PROGRESSIVE_HINT_PROMPT
-from .utils import _extract_json, generator_kwargs
+from .utils import _extract_json, generator_kwargs, generator_timeout
 
 
 def rescue_with_hints(
@@ -59,7 +59,9 @@ def rescue_with_hints(
     gen = next((m for m in specs.values() if m.role == "generator"), None)
     if gen is None:
         raise RuntimeError("No generator model configured in models.yaml.")
-    provider = OpenAICompatibleProvider(gen.base_url or "", gen.api_key_env)
+    provider = OpenAICompatibleProvider(
+        gen.base_url or "", gen.api_key_env, timeout=generator_timeout(gen)
+    )
     engine = get_engine()
     _log("rescue_start", n_questions=len(question_ids), run_id=run_id,
          model_id=model_id, calibration_k=k, max_hints=max_hints)

@@ -13,7 +13,7 @@ from frontier_lens.templates import all_specs
 
 from .candidates import _store_candidate
 from .prompts import ONE_SHOT_EVAL, ONE_SHOT_TRAIN
-from .utils import generator_kwargs
+from .utils import generator_kwargs, generator_timeout
 
 
 def _eval_cells() -> list[tuple[str, str]]:
@@ -65,7 +65,9 @@ def propose_one_shot(
         raise ValueError(f"bad split {rl_split}")
     specs = {m.id: m for m in sync_models()}
     gen = next(m for m in specs.values() if m.role == "generator")
-    provider = OpenAICompatibleProvider(gen.base_url or "", gen.api_key_env)
+    provider = OpenAICompatibleProvider(
+        gen.base_url or "", gen.api_key_env, timeout=generator_timeout(gen)
+    )
     ids = []
     if rl_split == "eval":
         cells = _eval_cells()

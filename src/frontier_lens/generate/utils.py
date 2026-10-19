@@ -86,3 +86,15 @@ def generator_extra_body(gen) -> dict:
 def generator_kwargs(gen) -> dict:
     """Keyword arguments for ``provider.complete`` that apply the generator's thinking setting."""
     return {"thinking": bool(getattr(gen, "thinking", False)), "extra_body": generator_extra_body(gen)}
+
+
+# A thinking call can take minutes (Gemma 4 31B with thinking on: 66-190 s, up to ~12 minutes
+# when the provider is busy). With a shorter timeout the SDK silently retries the whole
+# call, so a job looks stuck while it keeps restarting the same request.
+THINKING_TIMEOUT_SEC = 900
+DEFAULT_TIMEOUT_SEC = 120
+
+
+def generator_timeout(gen) -> float:
+    """Seconds to wait for one generator call."""
+    return THINKING_TIMEOUT_SEC if getattr(gen, "thinking", False) else DEFAULT_TIMEOUT_SEC

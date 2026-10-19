@@ -88,10 +88,12 @@ def test_no_cap_means_no_truncation_flag(monkeypatch):
 
 # ── config: the cap is per model ────────────────────────────────────────
 
-def test_only_the_policy_has_an_output_cap_in_models_yaml():
+def test_output_caps_in_models_yaml_are_set_per_model():
     caps = {m.id: m.max_tokens for m in load_yaml()}
-    assert caps["gemma4-26b-a4b"] == 16000
-    assert all(v is None for k, v in caps.items() if k != "gemma4-26b-a4b")
+    assert caps["gemma4-26b-a4b"] == 16000     # the policy
+    assert caps["gemma2-27b"] == 4096          # 8,192-token context window
+    # the other models (some reason at length) stay uncapped
+    assert all(v is None for k, v in caps.items() if k not in {"gemma4-26b-a4b", "gemma2-27b"})
 
 
 def test_contest_sampling_passes_the_models_cap(monkeypatch):
