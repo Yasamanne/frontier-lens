@@ -211,7 +211,7 @@ st.markdown("""
     </svg>
     <p style="color:#9B97B8;font-size:1.05rem;margin:0 0 1.4rem 0;line-height:1.65;max-width:660px;">
         An RL data engine for open-weight models — generates verifiable tasks at the policy's edge,
-        hardens exact-match reward, audits quality with humans, and keeps a clean held-out eval.
+        hardens exact-match reward, and audits quality with humans.
     </p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <span style="background:#1E0D35;border:1px solid #C96FFF;border-radius:20px;
