@@ -181,7 +181,8 @@ def _render_augment_results(row: dict) -> None:
     st.dataframe(
         [{"source_id": r["source_id"][:14], "candidate_id": r["candidate_id"],
           "status": r["status"],
-          "reason": reason_label(r.get("reason"), r.get("pass_rate")),
+          "reason": (f"rescued with a level-{r['rescued_level']} hint" if r.get("rescued_level")
+                     else reason_label(r.get("reason"), r.get("pass_rate"))),
           "pass_rate": round(r["pass_rate"], 3) if r["pass_rate"] is not None else None}
          for r in results],
         width="stretch",
@@ -309,8 +310,9 @@ else:
         aug_loops = None
         aug_fix_iters = None
         aug_tune = None
+        aug_hints = 3
         if aug_mode == "🤖 ReAct agent + Review":
-            col_loops, col_fix, col_tune = st.columns(3)
+            col_loops, col_fix, col_tune, col_hint = st.columns(4)
             aug_loops = col_loops.slider(
                 "Max agent loops per draft", 1, 6, 3, key="aug_loops",
                 help="Tool-call rounds the agent may use before it must submit a draft.",
@@ -326,14 +328,23 @@ else:
                      "harder (or corrected/easier) version. 0 = no tuning, a candidate outside "
                      "the learnable band is simply rejected.",
             )
+            aug_hints = col_hint.slider(
+                "Hint levels for never-solved questions", 0, 3, 3, key="aug_hint_levels",
+                help="A new question the policy never solves (0 correct) goes to the dead-zone "
+                     "rescue: up to this many progressive hints (framing, technique, common "
+                     "mistake), calibrated after each. The first level that lands in the band "
+                     "becomes an SME candidate with the hinted stem. 0 = reject such questions.",
+            )
 
         _total_cands = int(aug_limit) * int(aug_each)
         if aug_mode == "🎯 One-shot":
             _est = _total_cands * (1 + int(aug_k))
         else:  # ReAct agent + Review, worst case: (tune + 1) rounds, each up to (fix + 1) drafts
             # of loops + 1 review calls, plus k policy samples to calibrate the round's draft
-            _est = _total_cands * (int(aug_tune if aug_tune is not None else 2) + 1) * (
-                (int(aug_fix_iters or 3) + 1) * (int(aug_loops or 3) + 1) + int(aug_k)
+            _est = _total_cands * (
+                (int(aug_tune if aug_tune is not None else 2) + 1)
+                * ((int(aug_fix_iters or 3) + 1) * (int(aug_loops or 3) + 1) + int(aug_k))
+                + int(aug_hints) * (1 + int(aug_k))   # rescue: 1 hint call + k samples per level
             )
         _worst = "" if aug_mode == "🎯 One-shot" else "up to "
         st.caption(
@@ -358,6 +369,7 @@ else:
                     "max_loops": int(aug_loops or 3),
                     "max_fix_iterations": int(aug_fix_iters or 3),
                     "max_tune_rounds": int(aug_tune if aug_tune is not None else 2),
+                    "max_hint_levels": int(aug_hints),
                 },
                 planned=len(seeds) * int(aug_each),
             )

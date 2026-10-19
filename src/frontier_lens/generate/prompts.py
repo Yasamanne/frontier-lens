@@ -97,7 +97,7 @@ Keep what was good; fix only what the reviewer flagged.
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true, "topic": "...", "band": "standard" or "hard"}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only.
 If topic or band are empty or unknown, infer them from the seed question:
   topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
@@ -178,7 +178,7 @@ The policy model should sometimes pass and sometimes fail (0 < pass_rate < 1).
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true, "topic": "...", "band": "standard" or "hard"}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 If Topic or Band above are empty or unknown, infer them from the seed question:
   topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
@@ -216,7 +216,9 @@ WORKFLOW (suggested):
   4. Call submit_candidate. Done.
 
 RULES:
-  - The answer must be a single bare value (numeric or short string).
+  - The answer must be a single bare value (a number or one short word), printed on one line.
+    Never a list, set, interval or pair: the grader cannot match answers with commas, slashes,
+    'and' or 'or'.
   - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
   - Python: only math, itertools, collections, decimal. No network, no external files.
   - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_candidate.
@@ -246,7 +248,7 @@ Band: {band}
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 Design the item to target the dominant failure mode listed above.
 The policy should neither always fail nor always pass (0 < pass_rate < 1).
@@ -259,7 +261,7 @@ Do not use any policy-model results. This item must not be calibrated to a polic
 
 Return JSON only:
 {{"stem": "...", "lang": "python" or "shell", "code": "...", "input_files": {{}}, "numeric": true}}
-Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
+Rules: single-line answer (one plain number or word: no commas, slashes, 'and' or 'or'); shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 """
 
@@ -288,9 +290,17 @@ HOW THE POLICY MODEL (the model being trained) BEHAVES ON THIS SEED. Aim your qu
 this weakness:
 {policy_weakness}
 
-TARGET DIFFICULTY: the policy should solve your question sometimes but not always (pass rate
-strictly between 0 and 1); questions it always or never solves are discarded. Ways to raise
-difficulty:
+TARGET DIFFICULTY: the policy should solve your question about half the time (between a
+quarter and three quarters of its attempts). Questions it ALWAYS or NEVER solves are discarded,
+so too hard is as bad as too easy.
+  - Stay close to the seed: the same kind of reasoning and about the same number of steps.
+    Change the objects, numbers or setting. Do not turn it into a much longer, much more
+    open-ended or proof-like question.
+  - Use what the policy did on the seed (above): if it solved the seed most of the time, make
+    yours slightly harder; if it solved it rarely, keep yours about as hard or slightly easier.
+  - Your draft is tested on the policy right after review and you get the result. Moving
+    difficulty by one small step at a time works; big jumps overshoot.
+Ways to adjust difficulty (use ONE, moderately):
 {hardening_levers}
 
 AVAILABLE TOOLS (at most {max_loops} tool-call rounds per draft; the last round must be
@@ -307,7 +317,9 @@ on every run.
 the next message and you revise (test again with run_snippet if you change the code).
 
 RULES:
-  - The answer must be a single bare value (numeric or short string), printed on one line.
+  - The answer must be a single bare value (a number or one short word), printed on one line.
+    Never a list, set, interval or pair: the grader cannot match answers with commas, slashes,
+    'and' or 'or'.
   - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
   - Python: only math, itertools, collections, decimal. No network, no external files.
   - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_draft.
@@ -333,19 +345,18 @@ it with run_snippet, then call submit_draft again.
 
 
 HARDENING_LEVERS = """\
-  - MAKE THE ANSWER NEED A LONG EXACT COMPUTATION: large bounds, a long recurrence, many cases
-    to count. Your code does it instantly; a solver reasoning without tools makes slips. This
-    is the strongest lever. Prefer it to questions about qualitative properties whose answer
-    is a small set or a famous fact that can be guessed or recalled
-  - add one more constraint or condition the solver has to keep track of
-  - combine two different ideas from the topic in one question
-  - add boundary cases, off-by-one traps or a rare special case
-  - replace a closed-form shortcut with a case analysis
-  - add realistic distractor details that do not change the answer"""
+  Harder (keep the seed's kind of reasoning):
+  - add one more condition the solver has to keep track of
+  - add one or two reasoning steps
+  - enlarge the input or the bounds moderately (your code still computes the exact answer)
+  - add one boundary case, off-by-one trap or rare special case
+  - replace a shortcut with a short case analysis
+  - add a realistic distractor detail that does not change the answer
+  Easier (undo some of the above): fewer steps or conditions, a smaller input, no trap."""
 
 SIMILAR_TUNE_HARDER_MESSAGE = """\
 CALIBRATION RESULT: the policy model solved your latest draft {correct}/{n} times (pass rate \
-{rate:.2f}). It is TOO EASY: RL needs questions the policy solves sometimes but not always.
+{rate:.2f}). It is too easy: RL needs questions the policy solves sometimes but not always.
 
 YOUR DRAFTS SO FAR AND HOW THE POLICY DID:
 {history}
@@ -353,16 +364,18 @@ YOUR DRAFTS SO FAR AND HOW THE POLICY DID:
 HOW THE POLICY SOLVED YOUR LATEST DRAFT (one of its correct replies, shortened):
 {trace}
 {escalation}
-Design the next question so that this kind of reasoning no longer works, and give it exactly \
-one unambiguous answer. Ways to raise difficulty:
+Make the question somewhat harder so that this approach no longer works every time. Keep the \
+same kind of reasoning as the seed and exactly one unambiguous answer. Apply {step_size} from \
+this list:
 {hardening_levers}
-Test the new code with run_snippet, then call submit_draft again.
+Aim for a question the policy solves about half the time. Test the new code with run_snippet, \
+then call submit_draft again.
 """
 
 SIMILAR_TUNE_ESCALATION = """\
-Small tweaks have not worked: {n_easy} draft(s) in a row were solved every time. Do NOT reuse \
-the structure of those drafts. Make a substantial change in the TYPE of reasoning the question \
-needs, and make the computation much longer or larger, not slightly different.
+{n_easy} drafts in a row were solved every time, so take a bigger step than before. Still stay \
+with the seed's kind of reasoning: a question far harder than the seed would overshoot and \
+nobody could solve it.
 """
 
 SIMILAR_TUNE_EASIER_MESSAGE = """\
@@ -373,8 +386,10 @@ YOUR DRAFTS SO FAR AND HOW THE POLICY DID:
 {history}
 
 First check that the question is correct: does the stem ask exactly what the code computes, \
-with one unambiguous answer? If something is wrong, fix it. If it is correct but simply too \
-hard, aim BETWEEN your drafts: easier than this one, harder than the ones the policy solved \
-every time (fewer steps or constraints, a smaller input, or remove a trap). \
-Test the new code with run_snippet, then call submit_draft again.
+with one unambiguous answer? If something is wrong, fix it. If it is correct but too hard, \
+make an EASIER version. If an earlier draft of yours was solved every time, the right \
+question lies BETWEEN that one and this one: undo roughly half of what you changed (fewer \
+steps or conditions, a smaller input, or remove a trap) instead of going back to it. \
+Aim for a question the policy solves about half the time. Test the new code with \
+run_snippet, then call submit_draft again.
 """

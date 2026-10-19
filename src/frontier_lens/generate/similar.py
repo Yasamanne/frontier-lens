@@ -16,7 +16,7 @@ from frontier_lens.registry import policy_spec, sync_models
 from frontier_lens.sandbox import execute
 
 from .calibration import _calibrate_collect
-from .candidates import _store_candidate
+from .candidates import _store_candidate, _store_hinted_candidate
 from .prompts import (
     HARDENING_LEVERS,
     MAX_FIX_ITERATIONS,
@@ -31,6 +31,7 @@ from .prompts import (
     SIMILAR_TUNE_ESCALATION,
     SIMILAR_TUNE_HARDER_MESSAGE,
 )
+from .rescue import hint_ladder
 from .utils import (
     _extract_json,
     _extract_stem_from_raw,
@@ -914,9 +915,10 @@ def _correct_trace(stats: dict, limit: int = 900) -> str:
 def _tune_message(stats: dict, key: str, history: list[dict]) -> str:
     """The calibration result as feedback.
 
-    Solved every time: the drafts so far, how the policy solved the latest one, and (after
-    repeated failures) a demand for a substantial change. Never solved: the policy's answers
-    and a request to check the question, then aim between the drafts so far.
+    Solved every time: the drafts so far, how the policy solved the latest one, and one
+    small step up (a bigger step after repeated easy drafts, still within the seed's kind of
+    reasoning). Never solved: the policy's answers and a request to check the question, then
+    aim halfway between the drafts so far.
     """
     n = stats["n"]
     if stats["correct"] >= n:  # solved every time
@@ -925,6 +927,7 @@ def _tune_message(stats: dict, key: str, history: list[dict]) -> str:
             correct=stats["correct"], n=n, rate=stats["pass_rate"],
             history=_history_text(history), trace=_correct_trace(stats),
             escalation=SIMILAR_TUNE_ESCALATION.format(n_easy=n_easy) if n_easy >= 2 else "",
+            step_size="TWO levers, or one lever clearly" if n_easy >= 2 else "ONE lever, moderately",
             hardening_levers=HARDENING_LEVERS,
         )
     answers = Counter(r["parsed"] or "(none)" for r in stats.get("responses", []))
@@ -942,11 +945,13 @@ def generate_similar_react_review(
     max_loops: int = 3,
     max_fix_iterations: int = MAX_FIX_ITERATIONS,
     max_tune_rounds: int = 2,
+    max_hint_levels: int = 3,
     calibration_k: int | None = None,
     complete_fn=None,
     log_fn=None,
     _client=None,
     _judge_provider=None,
+    _gen_provider=None,
 ) -> list[dict]:
     """ReAct agent drafts, a reviewer scores, the policy is measured, the agent tunes.
 
@@ -964,7 +969,10 @@ def generate_similar_react_review(
     4. A reviewed draft is calibrated on the policy. In the band (0 < pass rate < 1): stored.
        Otherwise the measured result goes back to the agent ("too easy: make it harder" or
        "never solved: check it, else simplify") for up to *max_tune_rounds* more drafts.
-    5. The last draft is stored either way; out of the band it is ``auto_rejected``.
+    5. A draft the policy never solves (0 of k) goes to the dead-zone rescue: up to
+       *max_hint_levels* progressive hints, calibrated after each; the first level that lands
+       in the band is stored as a ``light_hint`` candidate for the SME.
+    6. Otherwise the last draft is stored either way; out of the band it is ``auto_rejected``.
 
     Returns the same result-dict schema as :func:`generate_similar_with_review`.
     """
@@ -998,12 +1006,16 @@ def generate_similar_react_review(
     judge_provider = _judge_provider or OpenAICompatibleProvider(
         judge.base_url or "", judge.api_key_env
     )
+    gen_provider = _gen_provider or OpenAICompatibleProvider(
+        gen.base_url or "", gen.api_key_env, timeout=generator_timeout(gen)
+    )
     toolset = _react_review_tools()
     engine = get_engine()
     total = len(source_questions) * n_each
     _log("similar_start", n_seeds=len(source_questions), n_each=n_each, total_candidates=total,
          calibration_k=k, mode="react_review", max_loops=max_loops,
-         max_fix_iterations=max_fix_iterations, max_tune_rounds=max_tune_rounds)
+         max_fix_iterations=max_fix_iterations, max_tune_rounds=max_tune_rounds,
+         max_hint_levels=max_hint_levels)
 
     def _one_seed(item: tuple[int, dict], _log) -> list[dict]:
         """Worker: all n_each variants of one seed, one after another (each sees the earlier)."""
@@ -1078,7 +1090,8 @@ def generate_similar_react_review(
                             "issues": [f"Sandbox error: {sandbox_result.reason}"],
                             "fix_instructions": (
                                 "Fix the code so it runs without errors and prints exactly one "
-                                "non-empty line, the same on every run."
+                                "non-empty line holding a single plain value (no commas, slashes, "
+                                "'and' or 'or'), the same on every run."
                             ),
                         }
                         continue
@@ -1124,16 +1137,47 @@ def generate_similar_react_review(
                     return cid, "unknown", None, None
                 return cid, row["status"], row["policy_pass_rate"], row["auto_reject_reason"]
 
+            def rescue(draft: dict, stats: dict, key: str) -> tuple | None:
+                """Dead-zone rescue of a draft the policy never solves; None if no hint level works."""
+                ladder = hint_ladder(
+                    draft["stem"], key, bool(draft.get("numeric", True)),
+                    provider=gen_provider, gen=gen, k=k, max_hints=max_hint_levels,
+                    failure_mode="never solved by the policy (a newly written question)",
+                    hint_feedback=sme_feedback_for(q.get("topic"), source_id=q["id"], hints=True),
+                    complete_fn=complete_fn, question_id=q["id"],
+                    log_fn=lambda e, **f: _log(e, source_id=q["id"], **f),
+                )
+                if not ladder["rescued"]:
+                    return None
+                cid = _store_hinted_candidate(
+                    source_qid=q["id"], hinted_stem=ladder["stem"], code=draft["code"],
+                    lang=draft.get("lang") or "python", files=draft.get("input_files") or {},
+                    key=key, numeric=bool(draft.get("numeric", True)),
+                    topic=q["topic"], band=q["band"], gen_id=gen.id,
+                    stats=ladder["stats"], run_id=run_id,
+                )
+                prior_stems.append(ladder["stem"][:300])
+                return cid, "pending", ladder["stats"]["pass_rate"], None, ladder["level"]
+
+            def finish(draft: dict, stats: dict, key: str) -> tuple:
+                """(candidate id, status, pass rate, reject reason, rescue level) of the final draft."""
+                if stats["correct"] == 0 and max_hint_levels > 0:
+                    rescued = rescue(draft, stats, key)
+                    if rescued:
+                        return rescued
+                return (*store(draft, stats), None)
+
             cid: str | None = None
             status, rate, reject_reason = "review_failed", None, None
+            rescue_level: int | None = None
             review_result: dict = {}
-            last_calibrated: tuple[dict, dict] | None = None  # (draft, stats) of the latest round
+            last_calibrated: tuple[dict, dict, str] | None = None  # (draft, stats, key), latest round
             history: list[dict] = []  # every calibrated draft of this variant
             for tune_round in range(max_tune_rounds + 1):
                 draft, review_result, passed, key = draft_and_review()
                 if not passed or not draft:
                     if last_calibrated:  # a retune failed: keep the earlier, measured draft
-                        cid, status, rate, reject_reason = store(*last_calibrated)
+                        cid, status, rate, reject_reason, rescue_level = finish(*last_calibrated)
                     else:
                         reject_reason = (
                             f"did not reach score >= {REVIEW_PASS_SCORE} in {max_fix_iterations + 1} drafts"
@@ -1150,21 +1194,21 @@ def generate_similar_react_review(
                 _log("tune_result", source_id=q["id"], round=tune_round,
                      pass_rate=stats["pass_rate"], n_correct=stats["correct"], n=stats["n"],
                      in_band=stats["in_learnable_band"])
-                last_calibrated = (draft, stats)
+                last_calibrated = (draft, stats, key)
                 history.append({"stem": draft["stem"], "correct": stats["correct"], "n": stats["n"]})
                 last_round = tune_round == max_tune_rounds
                 if not stats["in_learnable_band"] and not last_round:
                     messages.append(
                         {"role": "user", "content": _tune_message(stats, key, history)})
                     continue
-                cid, status, rate, reject_reason = store(draft, stats)
+                cid, status, rate, reject_reason, rescue_level = finish(draft, stats, key)
                 break
 
             _log("similar_result", source_id=q["id"], candidate_id=cid or "", status=status,
-                 pass_rate=rate, auto_reject_reason=reject_reason,
+                 pass_rate=rate, auto_reject_reason=reject_reason, rescued_level=rescue_level,
                  review_score=review_result.get("score"))
             return {"source_id": q["id"], "candidate_id": cid or "", "status": status,
-                    "pass_rate": rate, "reason": reject_reason}
+                    "pass_rate": rate, "reason": reject_reason, "rescued_level": rescue_level}
 
         return [_run_variant(a) for a in range(n_each)]
 

@@ -174,6 +174,12 @@ def _require_single_line(result: SandboxResult) -> SandboxResult:
         return SandboxResult(False, "", "prints nothing", "empty_output")
     if "\n" in result.stdout:
         return SandboxResult(False, result.stdout, "more than one line", "multi_line_output")
+    from frontier_lens.reward import is_degenerate
+
+    if is_degenerate(result.stdout):  # the reward scores such answers 0, even a correct one
+        return SandboxResult(
+            False, result.stdout,
+            "answers with a comma, slash, 'and' or 'or' can never be matched", "unmatchable_key")
     return result
 
 
@@ -185,11 +191,13 @@ def execute(
     *,
     single_line: bool = False,
 ) -> SandboxResult:
-    """Run *code*; with ``single_line=True`` its output must be one non-empty line.
+    """Run *code*; with ``single_line=True`` its output must be one plain value.
 
     Generated questions use ``single_line=True``: the stdout is the gold key, which the
-    prompts promise is a single bare value, so empty or multi-line output is rejected
-    (``empty_output`` / ``multi_line_output``) instead of becoming a key nobody can match.
+    prompts promise is a single bare value. Empty output, several lines, or an answer the
+    reward can never match (a comma, slash, "and"/"or" scores 0 even when right) is rejected
+    (``empty_output`` / ``multi_line_output`` / ``unmatchable_key``) instead of becoming a
+    key nobody can match.
     """
     result = _execute(lang, code, input_files, twice)
     return _require_single_line(result) if single_line and result.ok else result

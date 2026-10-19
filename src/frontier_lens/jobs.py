@@ -196,6 +196,10 @@ def format_augment_event(event: str, **f) -> str:
                if f.get("auto_reject_reason") else "")
         return (f"  {icon} cand={f.get('candidate_id', '?')} status={f.get('status')} "
                 f"pass_rate={rate_str}{rev}{why}")
+    if event == "hint_attempt_result":
+        verdict = "in band: rescued ✓" if f.get("rl_suitable") else "not yet"
+        return (f"  💡 hint level {f.get('level')}: {f.get('n_correct')}/{f.get('n')} solved, "
+                f"pass_rate={f.get('pass_rate', 0):.2f}, {verdict}")
     if event == "tune_result":
         verdict = "in band ✓" if f.get("in_band") else "out of band, asking the agent to retune"
         return (f"  🎯 calibration (round {f.get('round', 0)}): {f.get('n_correct')}/{f.get('n')} "
@@ -326,6 +330,7 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
                 "status": fields.get("status"),
                 "pass_rate": fields.get("pass_rate"),
                 "reason": fields.get("auto_reject_reason"),
+                "rescued_level": fields.get("rescued_level"),
             })
         return False
 
@@ -337,7 +342,8 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
             generate_similar_react_review(
                 seeds, max_loops=cfg["max_loops"],
                 max_fix_iterations=cfg["max_fix_iterations"],
-                max_tune_rounds=cfg.get("max_tune_rounds", 2), **common,
+                max_tune_rounds=cfg.get("max_tune_rounds", 2),
+                max_hint_levels=cfg.get("max_hint_levels", 3), **common,
             )
         elif cfg["mode"] == "review":
             generate_similar_with_review(

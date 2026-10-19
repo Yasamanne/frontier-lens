@@ -360,8 +360,10 @@ def test_augmentation_controls_offer_one_shot_and_the_merged_mode():
     assert at.radio(key="aug_mode").value == "🤖 ReAct agent + Review"
     assert at.slider(key="aug_loops").value == 3 and at.slider(key="aug_fix_iters").value == 3
     assert at.slider(key="aug_tune_rounds").value == 2
-    # worst case, 1 candidate: (2 tune + 1) rounds x ((3 fix + 1) drafts x (3 loops + 1) + k=4) = 60
-    assert any("up to ~60 API calls" in c.value for c in at.caption)
+    assert at.slider(key="aug_hint_levels").value == 3
+    # worst case, 1 candidate: (2 tune + 1) rounds x ((3 fix + 1) drafts x (3 loops + 1) + k=4) = 60,
+    # plus 3 hint levels x (1 hint call + k=4 samples) = 15
+    assert any("up to ~75 API calls" in c.value for c in at.caption)
 
     at.radio(key="aug_mode").set_value("🎯 One-shot").run()
     assert not at.exception
@@ -406,12 +408,14 @@ def test_too_easy_draft_is_sent_back_for_a_harder_version(monkeypatch):
     assert [(r["status"], r["pass_rate"]) for r in results] == [("pending", 0.5)]
     assert [c["stem"] for c in _candidates()] == ["harder stem"]   # the easy draft is not stored
     tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
-    assert "solved your latest draft 2/2 times" in tune["content"] and "TOO EASY" in tune["content"]
+    assert "solved your latest draft 2/2 times" in tune["content"] and "too easy" in tune["content"]
     assert "1. solved 2/2: easy stem" in tune["content"]            # the drafts so far
     assert "HOW THE POLICY SOLVED YOUR LATEST DRAFT" in tune["content"]
     assert "FINAL: 4" in tune["content"]                            # one correct policy reply
-    assert "LONG EXACT COMPUTATION" in tune["content"]              # the strongest hardening lever
-    assert "Small tweaks have not worked" not in tune["content"]    # only after repeated failures
+    assert "enlarge the input or the bounds moderately" in tune["content"]   # the levers
+    assert "ONE lever, moderately" in tune["content"]               # a small first step
+    assert "bigger step" not in tune["content"]                     # only after repeated easy drafts
+    assert "about half the time" in tune["content"]
 
 
 def test_last_draft_is_stored_as_out_of_band_when_tuning_runs_out(monkeypatch):
@@ -433,7 +437,8 @@ def test_never_solved_draft_asks_the_agent_to_check_the_question_first(monkeypat
     tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
     assert "latest draft 0/2 times" in tune["content"] and "9 (x2)" in tune["content"]
     assert "Your code computed: 4" in tune["content"] and "ask exactly what the code" in tune["content"]
-    assert "aim BETWEEN" in tune["content"] and "1. solved 0/2: hard stem" in tune["content"]
+    assert "BETWEEN that one and this one" in tune["content"]
+    assert "1. solved 0/2: hard stem" in tune["content"]
 
 
 def test_no_tuning_rounds_means_an_out_of_band_draft_is_just_rejected(monkeypatch):
@@ -467,7 +472,7 @@ def test_agent_prompt_describes_how_the_policy_behaves_on_the_seed(monkeypatch):
     assert "answered correctly 1/3 times" in prompt
     assert "6 (x2)" in prompt
     assert "Policy failure analysis" in prompt          # the failure mode of the seed's cell
-    assert "pass rate\nstrictly between 0 and 1" in prompt and "LONG EXACT COMPUTATION" in prompt
+    assert "about half the time" in prompt and "enlarge the input or the bounds moderately" in prompt
 
 
 def test_precomputed_calibration_is_not_repeated():
@@ -586,10 +591,11 @@ def test_repeated_easy_drafts_trigger_a_demand_for_a_substantial_change(monkeypa
     assert [r["status"] for r in results] == ["auto_rejected"]
     first = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
     third = [m for m in client.seen[2] if isinstance(m, dict) and m.get("role") == "user"][-1]
-    assert "Small tweaks" not in first["content"]
-    assert "Small tweaks have not worked: 2 draft(s) in a row" in third["content"]
+    assert "bigger step" not in first["content"] and "ONE lever, moderately" in first["content"]
+    assert "2 drafts in a row were solved every time, so take a bigger step" in third["content"]
+    assert "TWO levers, or one lever clearly" in third["content"]
     assert "1. solved 2/2: variant A" in third["content"] and "2. solved 2/2: variant B" in third["content"]
-    assert "Do NOT reuse the structure" in third["content"]
+    assert "would overshoot" in third["content"]   # a bigger step, but within the seed's kind of reasoning
 
 
 # ── out_of_band wording, and the option to keep such candidates for the SME ──
@@ -660,7 +666,7 @@ def test_provider_accepts_a_timeout(monkeypatch):
 
 def test_agent_calls_use_the_long_timeout_and_log_each_wait(monkeypatch):
     events: list[tuple[str, dict]] = []
-    rounds = [[_call("1", "run_snippet", {"lang": "python", "code": "print(4)\\n"})],
+    rounds = [[_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
               [_call("2", "submit_draft", _draft())]]
     _, client, _ = _run_react_review(
         rounds, [90], monkeypatch, log_fn=lambda event, **f: events.append((event, f)))
@@ -691,3 +697,205 @@ def test_job_log_shows_that_it_is_waiting_for_the_generator():
     line = format_augment_event("agent_call", step=2, thinking=True)
     assert "step 2" in line and "waiting for the generator" in line and "several minutes" in line
     assert "several minutes" not in format_augment_event("agent_call", step=1, thinking=False)
+
+
+# ── never-solved drafts go to the dead-zone rescue ──────────────────────
+
+class FakeHintProvider:
+    """Stands in for the generator when it writes hints: level n returns 'hinted stem n'."""
+
+    def __init__(self):
+        self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
+
+    def complete(self, prompt, model, **kw):
+        self.prompts.append(prompt)
+        self.kwargs.append(kw)
+        n = len(self.prompts)
+        body = {"stem": f"hinted stem {n}", "hint": f"hint {n}"}
+        return Completion(text=json.dumps(body), latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+_NEVER = ["FINAL: 9", "FINAL: 9"]      # k = 2, no sample correct
+_HALF = ["FINAL: 4", "FINAL: 9"]       # in the band
+
+
+def test_never_solved_draft_is_rescued_by_a_hint_and_goes_to_the_sme(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER + _NEVER + _HALF, max_tune_rounds=0,
+        _gen_provider=hints)
+
+    assert [(r["status"], r["rescued_level"], r["pass_rate"]) for r in results] == [
+        ("pending", 2, 0.5)]
+    stored = _candidates()
+    assert [(c["stem"], c["status"], c["generator_mode"]) for c in stored] == [
+        ("hinted stem 2", "pending", "light_hint")]
+    assert stored[0]["code"] == "print(4)\n" and json.loads(stored[0]["source_fail_ids"]) == ["seed1"]
+    assert len(hints.prompts) == 2
+    assert "GOLD ANSWER" in hints.prompts[0] and "hinted stem 1" in hints.prompts[1]  # builds on level 1
+    assert hints.kwargs[0]["thinking"] is True                                         # generator settings
+    assert hints.kwargs[0]["extra_body"] == {"reasoning": {"enabled": True}}
+
+
+def test_never_solved_draft_that_no_hint_rescues_is_rejected_out_of_band(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER * 4, max_tune_rounds=0,
+        max_hint_levels=2, _gen_provider=hints)
+    assert [(r["status"], r["reason"], r["rescued_level"]) for r in results] == [
+        ("auto_rejected", "out_of_band", None)]
+    assert [(c["stem"], c["status"]) for c in _candidates()] == [("hard stem", "auto_rejected")]
+    assert len(hints.prompts) == 2
+
+
+def test_always_solved_draft_is_not_sent_to_hint_rescue(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=["FINAL: 4"] * 2, max_tune_rounds=0, _gen_provider=hints)
+    assert [r["status"] for r in results] == ["auto_rejected"]
+    assert hints.prompts == []          # hints make a question easier; this one is already easy
+
+
+def test_zero_hint_levels_switches_the_rescue_off(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER, max_tune_rounds=0, max_hint_levels=0,
+        _gen_provider=hints)
+    assert [r["status"] for r in results] == ["auto_rejected"] and hints.prompts == []
+
+
+def test_a_failed_retune_still_rescues_the_earlier_never_solved_draft(monkeypatch):
+    hints = FakeHintProvider()
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))]]       # then the agent delivers nothing
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=_NEVER + _HALF, max_tune_rounds=1, max_loops=1,
+        max_fix_iterations=0, _gen_provider=hints)
+    assert [(r["status"], r["rescued_level"]) for r in results] == [("pending", 1)]
+    assert [c["stem"] for c in _candidates()] == ["hinted stem 1"]
+
+
+def test_hint_ladder_stops_at_the_first_level_in_the_band():
+    from frontier_lens.generate.rescue import hint_ladder
+
+    hints = FakeHintProvider()
+    replies = iter(_NEVER + _HALF + ["FINAL: 4"] * 2)         # level 2 is in the band
+    ladder = hint_ladder(
+        "orig", "4", True, provider=hints, gen=NS(model="m", thinking=False, id="g"), k=2,
+        max_hints=3, failure_mode="x", hint_feedback="none", complete_fn=lambda _p: next(replies))
+    assert (ladder["rescued"], ladder["level"], ladder["stem"]) == (True, 2, "hinted stem 2")
+    assert [r["level"] for r in ladder["rounds"]] == [1, 2] and len(hints.prompts) == 2
+    assert hints.kwargs[0]["thinking"] is False
+
+
+def test_job_keeps_the_rescue_level_and_passes_the_hint_levels(monkeypatch):
+    from frontier_lens import jobs
+
+    got: dict = {}
+
+    def fake(seeds, *, log_fn, max_hint_levels, **kw):
+        got["max_hint_levels"] = max_hint_levels
+        log_fn("similar_result", source_id="seed1", candidate_id="c1", status="pending",
+               pass_rate=0.5, auto_reject_reason=None, rescued_level=2)
+
+    monkeypatch.setattr("frontier_lens.generate.generate_similar_react_review", fake)
+    monkeypatch.setattr(jobs, "_log_fn", lambda job_id, fmt, on_event: (
+        lambda event, **fields: on_event(event, fields)))
+    res = NS(items=[], skipped=[], add=lambda item, skipped=False: res.items.append(item))
+    jobs._run_augment("j", {"run_id": "r", "mode": "react_review", "seeds": [SEED], "n_each": 1,
+                            "calibration_k": 2, "max_loops": 3, "max_fix_iterations": 1,
+                            "max_tune_rounds": 0, "max_hint_levels": 2}, res)
+    assert got["max_hint_levels"] == 2 and [i["rescued_level"] for i in res.items] == [2]
+
+
+def test_job_log_shows_each_hint_level():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event("hint_attempt_result", level=2, n_correct=1, n=2, pass_rate=0.5,
+                                rl_suitable=True)
+    assert "hint level 2" in line and "1/2 solved" in line and "rescued" in line
+
+
+# ── a malformed tool call must not end the job ───────────────────────────
+
+def test_run_snippet_without_lang_runs_as_python():
+    from frontier_lens.agent.tools import handle
+
+    out = json.loads(handle("run_snippet", {"code": "print(4)\n"}, gen_id="g", fail_model=""))
+    assert out["ok"] is True and out["stdout"] == "4"      # Gemma 4 31B omitted `lang` in a real run
+
+
+def test_tool_calls_with_missing_or_wrong_arguments_return_an_error_instead_of_raising():
+    from frontier_lens.agent.tools import handle
+
+    for name, args in [("run_snippet", {}), ("run_snippet", {"lang": "python"}),
+                       ("check_similarity", []), ("submit_candidate", {"stem": "s"})]:
+        out = json.loads(handle(name, args, gen_id="g", fail_model=""))
+        assert "error" in out and name in out["error"], (name, args)
+
+
+def test_agent_survives_a_run_snippet_call_with_no_arguments(monkeypatch):
+    rounds = [[_call("1", "run_snippet", {})], [_call("2", "submit_draft", _draft())]]
+    results, client, _ = _run_react_review(rounds, [90], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"]
+    tool_msg = next(m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "tool")
+    assert "error" in json.loads(tool_msg["content"])      # the model is told what went wrong
+
+
+# ── the key must be something the grader can match ──────────────────────
+
+def test_keys_the_reward_can_never_match_are_rejected():
+    from frontier_lens.sandbox import execute
+
+    for out in ("1, 2", "3/4", "A and B", "yes or no", "[0, 1]"):
+        r = execute("python", f"print({out!r})\n", twice=True, single_line=True)
+        assert (r.ok, r.reason) == (False, "unmatchable_key"), out
+    for out in ("13", "-3.5", "abc", "1136689"):
+        assert execute("python", f"print({out!r})\n", twice=True, single_line=True).ok, out
+    assert execute("python", "print('1, 2')\n", twice=True).ok     # other callers are unchanged
+
+
+def test_candidate_with_an_unmatchable_key_is_auto_rejected():
+    _, row = _store("print('0, 1')\n")
+    assert (row["status"], row["auto_reject_reason"], row["executed_key"]) == (
+        "auto_rejected", "unmatchable_key", None)
+
+
+def test_agent_is_told_to_fix_a_key_with_a_comma(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft(code="print('1, 2')\n"))],
+              [_call("2", "submit_draft", _draft("fixed stem"))]]
+    results, client, judge = _run_react_review(rounds, [90], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"] and len(judge.prompts) == 1
+    fix = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "unmatchable_key" in fix["content"] and "single plain value" in fix["content"]
+
+
+def test_generation_prompts_ask_for_a_plain_single_value():
+    from frontier_lens.generate import prompts
+
+    for name in ("SIMILAR_QUESTION_PROMPT", "SIMILAR_FIX_PROMPT", "SIMILAR_AGENT_SYSTEM",
+                 "SIMILAR_AGENT_REVIEW_SYSTEM"):
+        assert "commas, slashes" in getattr(prompts, name), name
+
+
+# ── difficulty target: about half, close to the seed, small steps ───────
+
+def test_agent_prompt_aims_at_about_half_and_stays_close_to_the_seed(monkeypatch):
+    _, client, _ = _run_react_review([[_call("1", "submit_draft", _draft())]], [90], monkeypatch)
+    prompt = client.seen[0][0]["content"]
+    assert "about half the time" in prompt
+    assert "too hard is as bad as too easy" in prompt
+    assert "Stay close to the seed" in prompt and "the same kind of reasoning" in prompt
+    assert "slightly harder" in prompt and "one small step at a time" in prompt
+    assert "Use ONE, moderately" not in prompt and "(use ONE, moderately)" in prompt
+    assert "LONG EXACT COMPUTATION" not in prompt        # no longer pushed as 'the strongest lever'
+
+
+def test_levers_go_both_ways():
+    from frontier_lens.generate.prompts import HARDENING_LEVERS
+
+    assert "Harder" in HARDENING_LEVERS and "Easier (undo" in HARDENING_LEVERS
