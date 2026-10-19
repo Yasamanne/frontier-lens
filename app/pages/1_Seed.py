@@ -12,6 +12,7 @@ if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
             del sys.modules[_name]
 
 import json
+import logging
 
 import streamlit as st
 
@@ -44,6 +45,7 @@ with _role_cols[1]:
 role = st.session_state.get("role", "Viewer")
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from frontier_lens import job_panel, jobs
 from frontier_lens.calibrate import GRIDS, KNOBS_PATH, PRIMARY, load_manifest
@@ -348,6 +350,9 @@ stem,key,topic,difficulty,solution_steps
 
 
     _import_result = st.session_state.pop("upload_import_result", None)
+    _import_error = st.session_state.pop("upload_import_error", None)
+    if _import_error:
+        st.error(f"❌ {_import_error}")
     _result_shown = False
 
     # While an import runs the controls are locked, so a second click or a file swap
@@ -363,7 +368,7 @@ stem,key,topic,difficulty,solution_steps
     )
 
     if uploaded_file is not None:
-        from frontier_lens.upload import delete_uploaded, import_rows, validate
+        from frontier_lens.upload import delete_uploaded, friendly_db_error, import_rows, validate
 
         data = uploaded_file.read()
         result = validate(data, uploaded_file.name)
@@ -573,11 +578,16 @@ stem,key,topic,difficulty,solution_steps
                         "failed": report.failed_batches,
                         "topics": list(report.new_topics),
                     }
-                n = import_rows(_seed_rows, replace=replace, filename=uploaded_file.name)
-                with engine.connect() as conn:
-                    total_uploaded = conn.execute(
-                        text("SELECT COUNT(*) FROM questions WHERE source='uploaded'")
-                    ).scalar() or 0
+                try:
+                    n = import_rows(_seed_rows, replace=replace, filename=uploaded_file.name)
+                    with engine.connect() as conn:
+                        total_uploaded = conn.execute(
+                            text("SELECT COUNT(*) FROM questions WHERE source='uploaded'")
+                        ).scalar() or 0
+                except SQLAlchemyError as exc:
+                    logging.getLogger(__name__).exception("upload import failed")
+                    st.session_state["upload_import_error"] = friendly_db_error(exc)
+                    st.rerun()
                 # Stash the result: st.rerun() would otherwise wipe it before it renders
                 st.session_state["upload_import_result"] = {
                     "file": uploaded_file.name,
