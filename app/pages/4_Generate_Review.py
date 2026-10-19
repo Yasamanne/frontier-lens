@@ -402,18 +402,37 @@ with engine.connect() as conn:
     ).mappings().all()
 
 with st.expander("🧠 Feedback the generator sees (built from SME reviews)"):
+    # The topics of the chosen run's questions: the generator reads feedback by the seed's topic.
     with engine.connect() as conn:
         _fb_topics = conn.execute(
-            text("SELECT DISTINCT topic FROM candidates WHERE topic IS NOT NULL ORDER BY topic")
+            text(
+                "SELECT DISTINCT q.topic FROM attempts a JOIN questions q ON q.id = a.question_id "
+                "WHERE a.run_id = :r AND q.topic IS NOT NULL ORDER BY 1"
+            ),
+            {"r": _run_id},
         ).scalars().all()
+        _fb_counts = dict(conn.execute(
+            text(
+                "SELECT c.topic, COUNT(*) FROM reviews r JOIN candidates c ON c.id = r.candidate_id "
+                "WHERE r.kind IN ('sme_queue', 'audit') GROUP BY c.topic"
+            )
+        ).all())
     if _fb_topics:
-        _fb_topic = st.selectbox("Topic", _fb_topics, key="fb_preview_topic")
+        _fb_topic = st.selectbox(
+            "Seed topic", _fb_topics, key="fb_preview_topic",
+            format_func=lambda t: f"{t}  ({_fb_counts.get(t, 0)} SME review(s))",
+        )
         _fb_q, _fb_h = st.tabs(["Question generation", "Rescue hints"])
         _fb_q.code(sme_feedback_for(_fb_topic), language=None)
         _fb_h.code(sme_feedback_for(_fb_topic, hints=True), language=None)
+        if not _fb_counts.get(_fb_topic):
+            st.caption(
+                "No SME has reviewed a candidate for this topic yet, so the generator gets no "
+                "feedback. Approve or reject candidates in the queue below to build it."
+            )
         st.caption("Not used for held-out eval generation (reviewers see policy pass rates).")
     else:
-        st.caption("No generated candidates yet.")
+        st.caption("This run has no questions with a topic.")
 
 if not sme_cands:
     st.info("Queue is empty. Run rescue or augmentation above to populate it.")
