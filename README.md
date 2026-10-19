@@ -1,6 +1,6 @@
 # Frontier Lens
 
-A small **RL data engine** for open-weight models. It measures a policy model on execution-verified tasks, finds where the policy is weak, generates or repairs tasks at the edge of what it can do, gates them with human review whose feedback flows back into the generator, and exports RL-ready JSONL plus a held-out eval.
+A small **RL data engine** for open-weight models. It measures a policy model on execution-verified tasks, finds where the policy has gap, generates or repairs tasks at the edge of what it can do, gates them with human review whose feedback flows back into the generator, and exports RL-ready data.
 
 Models answer tasks in plain text and must not run code. The gold key is the stdout of the task's verifier code, run in a sandbox. Answers end with `FINAL: <answer>`. The reward is `exact_match_v2`: it reads the last `FINAL:` line only (case-insensitive, so `Final: 42` counts; v1 was case-sensitive) and gives 0 to hedges.
 
