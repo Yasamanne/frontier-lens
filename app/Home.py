@@ -182,9 +182,8 @@ _missing_keys = [k for k in ("OPENROUTER_API_KEY",) if not os.getenv(k)]
 if _missing_keys:
     st.warning(
         f"**Missing env vars:** `{'`, `'.join(_missing_keys)}`  \n"
-        "Live LLM calls will fail. "
-        "Fixture-replay and Viewer mode still work.  \n"
-        "Set them in `.env` and restart, or pass `--env-file .env` to Docker.",
+        "Live model calls are unavailable until the API key is configured. "
+        "Viewing existing data still works.",
         icon="⚠️",
     )
 
@@ -211,7 +210,7 @@ st.markdown("""
     </svg>
     <p style="color:#9B97B8;font-size:1.05rem;margin:0 0 1.4rem 0;line-height:1.65;max-width:660px;">
         An RL data engine for open-weight models — generates verifiable tasks at the policy's edge,
-        hardens exact-match reward, audits quality with humans, and keeps a clean held-out eval.
+        hardens exact-match reward, and audits quality with humans.
     </p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <span style="background:#1E0D35;border:1px solid #C96FFF;border-radius:20px;
@@ -243,9 +242,9 @@ role = st.radio(
 st.session_state["role"] = role
 
 ROLE_DESC = {
-    "Organizer": "Full access — run calibration, generate seeds, run contests, trigger generation.",
-    "SME":       "Subject-matter expert — review audit samples and label candidates.",
-    "Viewer":    "Read-only — replay mode only, no writes to the database.",
+    "Organizer": "Full access — run calibration, generate seeds, run evaluations, trigger generation.",
+    "SME":       "Subject-matter expert — approve or reject generated questions, with reasons and notes.",
+    "Viewer":    "Read-only — browse runs, analysis and datasets; cannot start jobs or change data.",
 }
 ROLE_COLOR = {"Organizer": "#FF8F5C", "SME": "#C96FFF", "Viewer": "#4CC9A0"}
 st.markdown(
@@ -293,15 +292,9 @@ for col, (num, icon, name, desc, href) in zip(cols, steps):
 </a>
 """, unsafe_allow_html=True)
 
-# ── Quick-start ───────────────────────────────────────────────────────────
-st.markdown("### Quick start")
-st.code(
-    "# 1. Generate seed questions (182 items, 7 topics)\n"
-    "uv run python -m frontier_lens.seed\n\n"
-    "# 2. (Optional) calibrate difficulty knobs to your model\n"
-    "uv run python -m frontier_lens.calibrate --live\n"
-    "uv run python -m frontier_lens.seed --force\n\n"
-    "# 3. Run evaluation (or use the Evaluate page)\n"
-    "uv run python -m frontier_lens.contest --live --models YOUR_MODEL_ID --k 8 --levels 2 3",
-    language="bash",
+# ── Getting started ───────────────────────────────────────────────────────
+st.markdown("### Getting started")
+st.markdown(
+    "Open **Seed** to load or upload questions, run **Evaluate** to measure a model, "
+    "then use **Gap Analysis** and **Generate** to find weak spots and build new questions."
 )
