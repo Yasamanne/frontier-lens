@@ -50,26 +50,65 @@ Roles (Organizer / SME / Viewer) are a UI switch, not authentication.
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.11. Seeding, tests and the viewer need no API key.
+Pick one: **local with uv** (best for development) or **Docker** (nothing to install but Docker). Both were tested from a fresh clone.
+
+You need an [OpenRouter](https://openrouter.ai/keys) API key for anything that calls a model (Evaluate, Generate, rescue, calibration). Seeding, the test suite and browsing existing data work without one.
+
+### Option A: local (uv)
+
+Prerequisites: [uv](https://docs.astral.sh/uv/getting-started/installation/) (it installs the pinned Python 3.11 for you) and git.
 
 ```bash
-uv python pin 3.11
-uv sync --group dev
-cp .env.example .env            # add OPENROUTER_API_KEY for live model calls
-uv run python -m frontier_lens.seed
-uv run pytest
-uv run streamlit run app/Home.py   # http://localhost:8501
+git clone https://github.com/Yasamanne/frontier-lens.git
+cd frontier-lens
+
+uv sync --group dev                  # create .venv and install dependencies
+cp .env.example .env                 # then set OPENROUTER_API_KEY in .env
+uv run python -m frontier_lens.seed  # build the 182-item seed bank in data/frontier_lens.db
+uv run streamlit run app/Home.py     # open http://localhost:8501
 ```
 
-**Docker:**
+Check the install with `uv run pytest` (about 4 minutes; model calls are faked, so it costs nothing and needs no key) and `uv run ruff check src tests`.
+
+### Option B: Docker
+
+Prerequisites: Docker.
 
 ```bash
+git clone https://github.com/Yasamanne/frontier-lens.git
+cd frontier-lens
+
+cp .env.example .env                 # then set OPENROUTER_API_KEY in .env
+mkdir -p data logs
 docker build -t frontier-lens .
-docker run -d -p 8501:8501 --env-file .env \
+docker run -d --name frontier-lens -p 8501:8501 --env-file .env \
   -v "$PWD/data:/app/data" -v "$PWD/logs:/app/logs" frontier-lens
+docker exec frontier-lens python -m frontier_lens.seed   # first run only: build the seed bank
 ```
 
-Do not run the app or tests on the host against the same `data/` while a container uses it. SQLite in WAL mode cannot share its lock memory across the Docker Desktop VM boundary. `railway.toml` deploys the same image to Railway; attach a volume for `data/`, or the database is lost on redeploy.
+Open http://localhost:8501. Stop and remove with `docker rm -f frontier-lens`; your database and logs stay in `./data` and `./logs`.
+
+- Mount `data/` and `logs/` as shown, or the database is lost when the container is removed.
+- Do not run the app or tests on the host against the same `data/` while a container uses it. SQLite in WAL mode cannot share its lock memory across the Docker Desktop VM boundary.
+- Run CLI commands in the container with `docker exec frontier-lens python -m frontier_lens.<module>`.
+- `railway.toml` deploys the same image to Railway; attach a volume for `data/`, or the database is lost on redeploy.
+
+### First run
+
+1. Open **Seed** and confirm the bank has 182 items (or upload your own CSV/JSONL).
+2. Open **Evaluate**, pick the policy model and start a run.
+3. Read the results in **Gap Analysis**, then use **Generate** to rescue or augment questions.
+4. Review candidates in the Generate tab's SME queue (switch **Role** to Organizer or SME, top right), then export from **Dataset**.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `401` or "missing env OPENROUTER_API_KEY" | Set the key in `.env`. In Docker, pass `--env-file .env` and restart the container. |
+| Pages are empty | Run the seed command (step 3 of Option A, last line of Option B). |
+| `database is locked` or `disk I/O error` | Only one writer at a time. Stop other processes using `data/` (see the Docker note above). |
+| Changes under `src/` do not show up | Restart Streamlit, or run it with `FRONTIER_LENS_DEV_RELOAD=1` for local development only. |
+| Port 8501 is taken | Use `--server.port 8502` (local) or `-p 8502:8501` (Docker). |
 
 **CLI.** Every stage works without the UI:
 
