@@ -243,8 +243,8 @@ st.session_state["role"] = role
 
 ROLE_DESC = {
     "Organizer": "Full access — run calibration, generate seeds, run evaluations, trigger generation.",
-    "SME":       "Subject-matter expert — review audit samples and label candidates.",
-    "Viewer":    "Read-only — replay mode only, no writes to the database.",
+    "SME":       "Subject-matter expert — approve or reject generated questions, with reasons and notes.",
+    "Viewer":    "Read-only — browse runs, analysis and datasets; cannot start jobs or change data.",
 }
 ROLE_COLOR = {"Organizer": "#FF8F5C", "SME": "#C96FFF", "Viewer": "#4CC9A0"}
 st.markdown(
