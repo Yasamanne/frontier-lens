@@ -2,6 +2,35 @@
 
 A small RL data engine for open-weight models. It measures a policy model on execution-verified tasks, finds where the policy has gaps, generates or repairs tasks at the edge of what it can do, gates them with human review whose feedback flows back into the generator, and exports RL-ready data.
 
+## Contents
+
+- [Overview](#overview)
+  - [Purpose](#purpose)
+  - [Inputs](#inputs)
+  - [Pipeline](#pipeline)
+  - [Outputs](#outputs)
+  - [Grading](#grading)
+  - [Glossary](#glossary)
+- [The problem](#the-problem)
+- [Who it is for](#who-it-is-for)
+- [How it works](#how-it-works)
+- [Setup](#setup)
+  - [Option A: local (uv)](#option-a-local-uv)
+  - [Option B: Docker](#option-b-docker)
+  - [First run](#first-run)
+  - [Troubleshooting](#troubleshooting)
+- [Models](#models)
+- [Key design decisions](#key-design-decisions)
+- [Changes of direction](#changes-of-direction)
+- [Results so far](#results-so-far)
+- [Testing and validation](#testing-and-validation)
+- [Limitations](#limitations)
+- [Next steps](#next-steps)
+- [Tools used, including AI](#tools-used-including-ai)
+- [Prior work and attribution](#prior-work-and-attribution)
+- [Time spent](#time-spent)
+- [More documentation](#more-documentation)
+
 ## Overview
 
 Frontier Lens is a data-curation pipeline for improving a language model through reinforcement learning (RL). It benchmarks a target model on questions with execution-verified answers, locates its failure modes, and produces new training questions calibrated to the model's current capability. Every generated question passes subject-matter expert (SME) review before it is accepted into the dataset.
