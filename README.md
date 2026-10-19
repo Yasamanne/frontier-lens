@@ -1,8 +1,51 @@
 # Frontier Lens
 
-A small **RL data engine** for open-weight models. It measures a policy model on execution-verified tasks, finds where the policy has gap, generates or repairs tasks at the edge of what it can do, gates them with human review whose feedback flows back into the generator, and exports RL-ready data.
+A small RL data engine for open-weight models. It measures a policy model on execution-verified tasks, finds where the policy has gaps, generates or repairs tasks at the edge of what it can do, gates them with human review whose feedback flows back into the generator, and exports RL-ready data.
+
+## Overview
+
+Frontier Lens is a data-curation pipeline for improving a language model through reinforcement learning (RL). It benchmarks a target model on questions with execution-verified answers, locates its failure modes, and produces new training questions calibrated to the model's current capability. Every generated question passes subject-matter expert (SME) review before it is accepted into the dataset.
+
+### Purpose
+
+A model gains the most from prompts it solves some of the time. Prompts it always solves or never solves yield no gradient signal during RL training. Frontier Lens measures the pass rate of each question on the target model and retains or synthesises questions in the productive range, referred to here as the *learnable band*.
+
+### Inputs
+
+| Input | Description |
+|---|---|
+| Question sets | Built-in procedurally generated questions (Python, shell, logic and related topics), or user-supplied CSV and JSONL files |
+| Target model | The model under improvement (the *policy*), accessed through an OpenRouter-compatible API |
+| Reference, generator and judge models | Reference models for benchmarking; a generator model that drafts questions; a judge model that scores drafts |
+| SME | The subject-matter expert who approves or rejects generated questions |
+
+### Pipeline
+
+1. **Evaluate.** The policy answers each question k times; responses are graded against the verified gold key. *Optional verifier check:* for questions with a pass rate of zero, a second model attempts them. If it gets at least one correct, the question and key are confirmed sound. If it gets none, the question is flagged for SME review as a possible defect.
+2. **Analyse.** Results are segmented by topic, difficulty band and failure mode to locate weaknesses.
+3. **Generate and repair.** The generator drafts new questions from in-band seeds. Questions the policy never solves are repaired with progressive hints. Each candidate is re-measured on the policy.
+4. **Review.** The SME approves or rejects each candidate. Decisions and rationale are fed back into later generation.
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| Weakness analysis | Pass-rate distribution, topic-by-difficulty heatmap and failure-mode breakdown |
+| RL-ready dataset | SME-reviewed questions with verified gold answers, exported as JSONL |
+| Fine-tuning dataset | Unsolved questions paired with the policy's failed responses, for supervised fine-tuning (SFT) |
+| Headroom report | Count of usable questions added, by generation method |
+
+### Grading
 
 Models answer tasks in plain text and must not run code. The gold key is the stdout of the task's verifier code, run in a sandbox. Answers end with `FINAL: <answer>`. The reward is `exact_match_v2`: it reads the last `FINAL:` line only (case-insensitive, so `Final: 42` counts; v1 was case-sensitive) and gives 0 to hedges.
+
+### Glossary
+
+- **Policy:** the model being improved.
+- **Reinforcement learning (RL):** a training method that optimises a model against a reward signal.
+- **Pass rate:** the fraction of a model's attempts at a question that are graded correct.
+- **Learnable band:** the pass-rate interval 0 < rate < 1, in which a question provides a training signal.
+- **SME:** subject-matter expert.
 
 **Claim:** the pipeline produces **RL-ready** task files (prompt, executed gold key, pinned reward id) under human review.
 **Not claimed:** that RL training on them improves the policy. That would make them **RL-proven**, and no training run was done.
