@@ -229,13 +229,14 @@ class FakeJudge:
         return Completion(text=json.dumps(body), latency_ms=1, tokens_in=1, tokens_out=1)
 
 
-def _run_react_review(rounds, scores, monkeypatch, **kw):
+def _run_react_review(rounds, scores, monkeypatch, replies=None, **kw):
     sync_models()
     monkeypatch.setattr(similar, "sme_feedback_for", lambda *a, **k: "SME-FEEDBACK-MARKER")
     client, judge = FakeAgentClient(rounds), FakeJudge(scores)
-    replies = iter(["FINAL: 4", "FINAL: 9"] * 4)  # half right: in the band
+    replies = iter(replies if replies is not None else ["FINAL: 4", "FINAL: 9"] * 4)  # in the band
+    kw.setdefault("max_loops", 3)
     results = similar.generate_similar_react_review(
-        [SEED], max_loops=3, calibration_k=2, complete_fn=lambda _p: next(replies),
+        [SEED], calibration_k=2, complete_fn=lambda _p: next(replies),
         _client=client, _judge_provider=judge, **kw,
     )
     return results, client, judge
@@ -318,8 +319,9 @@ def test_augment_job_dispatches_react_review_and_keeps_the_reject_reason(monkeyp
 
     got: dict = {}
 
-    def fake(seeds, *, max_loops, max_fix_iterations, log_fn, **common):
-        got.update(seeds=seeds, max_loops=max_loops, max_fix_iterations=max_fix_iterations)
+    def fake(seeds, *, max_loops, max_fix_iterations, max_tune_rounds, log_fn, **common):
+        got.update(seeds=seeds, max_loops=max_loops, max_fix_iterations=max_fix_iterations,
+                   max_tune_rounds=max_tune_rounds)
         log_fn("similar_result", source_id="seed1", candidate_id="c1", status="auto_rejected",
                pass_rate=1.0, auto_reject_reason="out_of_band")
 
@@ -328,10 +330,10 @@ def test_augment_job_dispatches_react_review_and_keeps_the_reject_reason(monkeyp
         lambda event, **fields: on_event(event, fields)))
     res = NS(items=[], skipped=[], add=lambda item, skipped=False: res.items.append(item))
     cfg = {"run_id": "r", "mode": "react_review", "seeds": [SEED], "n_each": 1,
-           "calibration_k": 2, "max_loops": 4, "max_fix_iterations": 2}
+           "calibration_k": 2, "max_loops": 4, "max_fix_iterations": 2, "max_tune_rounds": 1}
     jobs._run_augment("job1", cfg, res)
 
-    assert (got["max_loops"], got["max_fix_iterations"]) == (4, 2)
+    assert (got["max_loops"], got["max_fix_iterations"], got["max_tune_rounds"]) == (4, 2, 1)
     assert [(i["status"], i["reason"]) for i in res.items] == [("auto_rejected", "out_of_band")]
 
 
@@ -357,8 +359,9 @@ def test_augmentation_controls_offer_one_shot_and_the_merged_mode():
     assert list(at.radio(key="aug_mode").options) == ["🎯 One-shot", "🤖 ReAct agent + Review"]
     assert at.radio(key="aug_mode").value == "🤖 ReAct agent + Review"
     assert at.slider(key="aug_loops").value == 3 and at.slider(key="aug_fix_iters").value == 3
-    # 1 candidate: (3 fix + 1 drafts) x (3 loops + 1 review) + k=4 calibration = 20 calls
-    assert any("~20 API calls" in c.value for c in at.caption)
+    assert at.slider(key="aug_tune_rounds").value == 2
+    # worst case, 1 candidate: (2 tune + 1) rounds x ((3 fix + 1) drafts x (3 loops + 1) + k=4) = 60
+    assert any("up to ~60 API calls" in c.value for c in at.caption)
 
     at.radio(key="aug_mode").set_value("🎯 One-shot").run()
     assert not at.exception
@@ -385,3 +388,125 @@ def test_generation_prompts_are_not_limited_to_coding_topics():
         text_ = getattr(prompts, name)
         assert "must be one of: python_state" not in text_, name
         assert "mathematics" in text_ and "algebra" in text_, name
+
+
+# ── difficulty tuning: the measured pass rate goes back to the agent ────
+
+def test_too_easy_draft_is_sent_back_for_a_harder_version(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("easy stem"))],
+              [_call("2", "submit_draft", _draft("harder stem"))]]
+    replies = ["FINAL: 4", "FINAL: 4",      # round 0: the policy solves it every time
+               "FINAL: 4", "FINAL: 9"]      # round 1: now in the band
+    results, client, _ = _run_react_review(
+        rounds, [90, 90], monkeypatch, replies=replies, max_tune_rounds=1)
+
+    assert [(r["status"], r["pass_rate"]) for r in results] == [("pending", 0.5)]
+    assert [c["stem"] for c in _candidates()] == ["harder stem"]   # the easy draft is not stored
+    tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "solved your question 2/2 times" in tune["content"] and "too easy" in tune["content"]
+    assert "enlarge the input" in tune["content"]                   # the hardening levers
+
+
+def test_last_draft_is_stored_as_out_of_band_when_tuning_runs_out(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("first stem"))],
+              [_call("2", "submit_draft", _draft("second stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90, 90], monkeypatch, replies=["FINAL: 4"] * 4, max_tune_rounds=1)
+    assert [(r["status"], r["reason"]) for r in results] == [("auto_rejected", "out_of_band")]
+    assert [(c["stem"], c["status"]) for c in _candidates()] == [("second stem", "auto_rejected")]
+
+
+def test_never_solved_draft_asks_the_agent_to_check_the_question_first(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("hard stem"))],
+              [_call("2", "submit_draft", _draft("fixed stem"))]]
+    replies = ["FINAL: 9", "FINAL: 9", "FINAL: 4", "FINAL: 9"]
+    results, client, _ = _run_react_review(
+        rounds, [90, 90], monkeypatch, replies=replies, max_tune_rounds=1)
+    assert [r["status"] for r in results] == ["pending"]
+    tune = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "0/2 times" in tune["content"] and "9 (x2)" in tune["content"]
+    assert "Your code computed: 4" in tune["content"] and "ask exactly what the code" in tune["content"]
+
+
+def test_no_tuning_rounds_means_an_out_of_band_draft_is_just_rejected(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    results, client, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=["FINAL: 4"] * 2, max_tune_rounds=0)
+    assert [r["status"] for r in results] == ["auto_rejected"]
+    assert len(client.seen) == 1
+
+
+# ── what the agent is told before it writes ─────────────────────────────
+
+def test_agent_prompt_describes_how_the_policy_behaves_on_the_seed(monkeypatch):
+    sync_models()
+    policy = "gemma4-26b-a4b"
+    runstate.insert_run("r1", ["seed1"], 3, None, {}, status="complete")
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO questions (id, topic, level, band, split, template, params_json, stem, "
+            "code, lang, input_files_json, key, numeric, source) VALUES "
+            "('seed1', 'python_state', 3, 'hard', 'train', 't', '{}', 'seed stem', 'print(7)', "
+            "'python', '{}', '7', 1, 'seed')"))
+        for i, (ans, ok) in enumerate([("6", 0), ("6", 0), ("7", 1)], start=1):
+            conn.execute(text(
+                "INSERT INTO attempts (run_id, model_id, question_id, sample_index, raw_output, "
+                "parsed_answer, is_correct, unparsable) VALUES ('r1', :m, 'seed1', :i, 'x', :a, :ok, 0)"),
+                {"m": policy, "i": i, "a": ans, "ok": ok})
+    rounds = [[_call("1", "submit_draft", _draft())]]
+    _, client, _ = _run_react_review(rounds, [90], monkeypatch, run_id="r1")
+    prompt = client.seen[0][0]["content"]
+    assert "answered correctly 1/3 times" in prompt
+    assert "6 (x2)" in prompt
+    assert "Policy failure analysis" in prompt          # the failure mode of the seed's cell
+    assert "pass rate\nstrictly between 0 and 1" in prompt and "enlarge the input" in prompt
+
+
+def test_precomputed_calibration_is_not_repeated():
+    def boom(_prompt):
+        raise AssertionError("must not sample the policy again")
+
+    stats = {"pass_rate": 0.5, "pass_at_k": 0.9, "in_learnable_band": True, "n": 2, "correct": 1}
+    cid = _store_candidate(
+        RAW, "python_state", "hard", "gen", "similar_augment", ["src"],
+        calibrate=True, complete_fn=boom, precomputed_stats=stats,
+    )
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text("SELECT status, policy_pass_rate FROM candidates WHERE id=:i"), {"i": cid}
+        ).one()
+    assert tuple(row) == ("pending", 0.5)
+
+
+def test_job_log_describes_the_tuning_step():
+    from frontier_lens.jobs import format_augment_event
+
+    line = format_augment_event("tune_result", round=1, pass_rate=1.0, n_correct=4, n=4, in_band=False)
+    assert "4/4 solved" in line and "retune" in line
+
+
+def test_agent_that_spends_every_round_testing_gets_one_last_chance_to_submit(monkeypatch):
+    rounds = [
+        [_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        [_call("2", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        None,                                            # the forced last round is ignored
+        [_call("3", "submit_draft", _draft("late stem"))],  # the extra nudged call
+    ]
+    results, client, _ = _run_react_review(rounds, [90], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"]
+    assert [c["stem"] for c in _candidates()] == ["late stem"]
+    assert len(client.seen) == 4
+    nudge = [m for m in client.seen[3] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "Submit your final draft now" in nudge["content"]
+    assert client.kwargs[3]["tool_choice"]["function"]["name"] == "submit_draft"
+
+
+def test_a_failed_retune_keeps_the_earlier_measured_draft(monkeypatch):
+    # round 0 submits a draft the policy always solves; the retune round never delivers a draft
+    rounds = [[_call("1", "submit_draft", _draft("first stem"))]]
+    results, _, _ = _run_react_review(
+        rounds, [90], monkeypatch, replies=["FINAL: 4"] * 2, max_tune_rounds=1,
+        max_loops=1, max_fix_iterations=0)
+    assert [(r["status"], r["reason"], r["pass_rate"]) for r in results] == [
+        ("auto_rejected", "out_of_band", 1.0)]
+    assert [(c["stem"], c["status"]) for c in _candidates()] == [("first stem", "auto_rejected")]

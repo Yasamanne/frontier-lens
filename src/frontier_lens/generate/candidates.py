@@ -32,7 +32,9 @@ def _store_candidate(
     complete_fn=None,
     log_fn=None,
     calibration_k: int | None = None,
+    precomputed_stats: dict | None = None,
 ) -> str:
+    """Store a generated candidate. *precomputed_stats* skips calibration (already measured)."""
     cid = uuid.uuid4().hex[:12]
     status = "pending"
     reason = None
@@ -66,7 +68,7 @@ def _store_candidate(
         else:
             key = result.stdout
             if rl_split == "train" and calibrate and status == "pending":
-                stats = estimate_pass_rate(
+                stats = precomputed_stats or estimate_pass_rate(
                     stem, key, numeric,
                     complete_fn=complete_fn, log_fn=log_fn,
                     k=calibration_k,

@@ -275,6 +275,15 @@ HUMAN REVIEWER (SME) FEEDBACK — what SMEs rejected and approved before. Do not
 the problems below; aim for what they approved:
 {sme_feedback}
 
+HOW THE POLICY MODEL (the model being trained) BEHAVES ON THIS SEED. Aim your question at
+this weakness:
+{policy_weakness}
+
+TARGET DIFFICULTY: the policy should solve your question sometimes but not always (pass rate
+strictly between 0 and 1); questions it always or never solves are discarded. Ways to raise
+difficulty:
+{hardening_levers}
+
 AVAILABLE TOOLS (at most {max_loops} tool-call rounds per draft; the last round must be
 submit_draft, so leave room for it):
   run_snippet      — run code in the sandbox; use it to check your verifier code
@@ -311,4 +320,34 @@ Fix instructions: {fix_instructions}
 Revise the question: keep what was good and change only what the reviewer flagged. The fix \
 must not reintroduce any problem from the SME feedback above. If you change the code, test \
 it with run_snippet, then call submit_draft again.
+"""
+
+
+HARDENING_LEVERS = """\
+  - add one more constraint or condition the solver has to keep track of
+  - add reasoning steps: make the answer depend on a longer chain
+  - combine two ideas from the topic in one question
+  - enlarge the input or the bounds (your code still computes it exactly; by hand it gets error-prone)
+  - add boundary cases, off-by-one traps or a rare special case
+  - add realistic distractor details that do not change the answer
+  - replace a closed-form shortcut with a case analysis"""
+
+SIMILAR_TUNE_HARDER_MESSAGE = """\
+CALIBRATION RESULT: the policy model solved your question {correct}/{n} times (pass rate \
+{rate:.2f}). It is too easy: RL needs questions the policy solves sometimes but not always.
+
+Make a HARDER version that still has exactly one unambiguous answer. Ways to raise difficulty:
+{hardening_levers}
+Keep what makes the question clear and change only what raises difficulty. Test the new code \
+with run_snippet, then call submit_draft again.
+"""
+
+SIMILAR_TUNE_EASIER_MESSAGE = """\
+CALIBRATION RESULT: the policy model solved your question 0/{n} times. Its answers were: \
+{policy_answers}. Your code computed: {key}.
+
+First check that the question is correct: does the stem ask exactly what the code computes, \
+with one unambiguous answer? If something is wrong, fix it. If it is correct but simply too \
+hard, make an EASIER version: fewer steps or constraints, a smaller input, or remove a trap. \
+Test the new code with run_snippet, then call submit_draft again.
 """
