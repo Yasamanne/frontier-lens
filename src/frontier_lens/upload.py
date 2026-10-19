@@ -247,7 +247,10 @@ def validate(data: bytes, filename: str) -> ValidationResult:
 
     # File size
     if len(data) > MAX_FILE_BYTES:
-        result.errors.append(f"File too large ({len(data) // 1024} KB). Max is {MAX_FILE_BYTES // 1024} KB.")
+        result.errors.append(
+            f"File too large ({len(data) / 1048576:.1f} MB). "
+            f"The maximum is {MAX_FILE_BYTES // 1048576} MB; split the file and upload it in parts."
+        )
         return result
 
     # Parse
