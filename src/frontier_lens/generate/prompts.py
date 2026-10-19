@@ -91,9 +91,14 @@ Return JSON only:
 Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only.
 If topic or band are empty or unknown, infer them from the seed question:
-  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
-    fsm_queries, minimax, logic_grid.
+  topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+  otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+  python_state, shell_pipelines).
   band must be one of: standard, hard.
+The subject can be anything, including mathematics. For maths the code must compute the exact
+answer itself (counting, number theory, combinatorics, exact integer or decimal arithmetic).
+Do not write questions whose answer is a proof, an expression, an interval or a symbolic value,
+and do not rely on libraries that are not allowed.
 """
 
 _LEVEL_INSTRUCTIONS: dict[int, str] = {
@@ -167,9 +172,14 @@ Return JSON only:
 Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 If Topic or Band above are empty or unknown, infer them from the seed question:
-  topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
-    fsm_queries, minimax, logic_grid.
+  topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+  otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+  python_state, shell_pipelines).
   band must be one of: standard, hard.
+The subject can be anything, including mathematics. For maths the code must compute the exact
+answer itself (counting, number theory, combinatorics, exact integer or decimal arithmetic).
+Do not write questions whose answer is a proof, an expression, an interval or a symbolic value,
+and do not rely on libraries that are not allowed.
 """
 
 SIMILAR_AGENT_SYSTEM = """\
@@ -201,9 +211,14 @@ RULES:
   - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
   - Python: only math, itertools, collections, decimal. No network, no external files.
   - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_candidate.
-    topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
-      fsm_queries, minimax, logic_grid.
+    topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+    otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+    python_state, shell_pipelines).
     band must be one of: standard, hard.
+  - The subject can be anything, including mathematics. For maths the code must compute the
+    exact answer itself (counting, number theory, combinatorics, exact integer or decimal
+    arithmetic). Do not write questions whose answer is a proof, an expression, an interval
+    or a symbolic value, and do not rely on libraries that are not allowed.
   - If TOPIC and BAND are already set above, you do NOT need to include them in submit_candidate.
 """
 
@@ -260,7 +275,8 @@ HUMAN REVIEWER (SME) FEEDBACK — what SMEs rejected and approved before. Do not
 the problems below; aim for what they approved:
 {sme_feedback}
 
-AVAILABLE TOOLS (at most {max_loops} tool-call rounds per draft):
+AVAILABLE TOOLS (at most {max_loops} tool-call rounds per draft; the last round must be
+submit_draft, so leave room for it):
   run_snippet      — run code in the sandbox; use it to check your verifier code
   check_similarity — check your stem is not too close to existing questions
   submit_draft     — send your draft for review. Call it ONCE per draft.
@@ -277,9 +293,14 @@ RULES:
   - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
   - Python: only math, itertools, collections, decimal. No network, no external files.
   - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_draft.
-    topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
-      fsm_queries, minimax, logic_grid.
+    topic: a short snake_case label for the subject. Reuse the seed's own topic when it has one;
+    otherwise name the subject (for example algebra, number_theory, combinatorics, geometry,
+    python_state, shell_pipelines).
     band must be one of: standard, hard.
+  - The subject can be anything, including mathematics. For maths the code must compute the
+    exact answer itself (counting, number theory, combinatorics, exact integer or decimal
+    arithmetic). Do not write questions whose answer is a proof, an expression, an interval
+    or a symbolic value, and do not rely on libraries that are not allowed.
 """
 
 SIMILAR_AGENT_FIX_MESSAGE = """\

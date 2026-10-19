@@ -757,10 +757,14 @@ def _agent_draft(
     from frontier_lens.agent.tools import handle
 
     for step in range(max_loops):
+        extra: dict = {}
+        if step == max_loops - 1:
+            # Last round: the agent must hand in its draft, not spend the round on another test.
+            extra["tool_choice"] = {"type": "function", "function": {"name": "submit_draft"}}
         try:
             with call_slot():
                 resp = client.chat.completions.create(
-                    model=gen.model, messages=messages, tools=toolset, timeout=120,
+                    model=gen.model, messages=messages, tools=toolset, timeout=120, **extra,
                 )
         except Exception as exc:
             log_fn("agent_error", step=step + 1, error=str(exc))

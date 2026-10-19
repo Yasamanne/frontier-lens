@@ -205,10 +205,12 @@ class FakeAgentClient:
     def __init__(self, rounds):
         self.rounds = iter(rounds)
         self.seen: list[list] = []
+        self.kwargs: list[dict] = []
         self.chat = NS(completions=NS(create=self._create))
 
     def _create(self, **kw):
         self.seen.append(list(kw["messages"]))
+        self.kwargs.append({k: v for k, v in kw.items() if k != "messages"})
         calls = next(self.rounds, None)
         return NS(choices=[NS(message=NS(tool_calls=calls, content=""))])
 
@@ -361,3 +363,25 @@ def test_augmentation_controls_offer_one_shot_and_the_merged_mode():
     at.radio(key="aug_mode").set_value("🎯 One-shot").run()
     assert not at.exception
     assert any("~5 API calls" in c.value for c in at.caption)  # 1 + k
+
+
+def test_react_review_forces_submit_draft_on_the_last_round(monkeypatch):
+    rounds = [
+        [_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        [_call("2", "check_similarity", {"stem": "x"})],
+        [_call("3", "submit_draft", _draft())],
+    ]
+    results, client, _ = _run_react_review(rounds, [90], monkeypatch)   # max_loops = 3
+    assert [r["status"] for r in results] == ["pending"]
+    assert ["tool_choice" in kw for kw in client.kwargs] == [False, False, True]
+    assert client.kwargs[2]["tool_choice"]["function"]["name"] == "submit_draft"
+
+
+def test_generation_prompts_are_not_limited_to_coding_topics():
+    from frontier_lens.generate import prompts
+
+    for name in ("SIMILAR_QUESTION_PROMPT", "SIMILAR_FIX_PROMPT", "SIMILAR_AGENT_SYSTEM",
+                 "SIMILAR_AGENT_REVIEW_SYSTEM"):
+        text_ = getattr(prompts, name)
+        assert "must be one of: python_state" not in text_, name
+        assert "mathematics" in text_ and "algebra" in text_, name
