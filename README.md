@@ -31,7 +31,7 @@ Seed (procedural templates → sandbox keys)  ──►  Evaluate (policy k=8, r
                                                          │
                                                          ▼
      Dataset / Headroom  ◄──  SME review  ◄──  Generate (dead-zone rescue with hints,
-     export JSONL             (reasons +        augmentation: one-shot / ReAct / Generate+Review,
+     export JSONL             (reasons +        augmentation: one-shot / ReAct agent + Review,
                                notes)           each candidate calibrated against the policy)
                                   │                      ▲
                                   └── feedback.context_for ┘  (fed into generator prompts)

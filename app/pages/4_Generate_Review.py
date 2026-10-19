@@ -119,7 +119,7 @@ for s in sus:
 # Both run in a detached process (frontier_lens.jobs) and save each finished
 # item to the database, so refreshing or leaving this page does not stop them.
 _active_jobs = {r["kind"]: r for r in jobs.active(("rescue", "augment"))}
-_AUG_MODES = {"🎯 One-shot": "one_shot", "🤖 ReAct agent": "react", "🔄 Generate + Review": "review"}
+_AUG_MODES = {"🎯 One-shot": "one_shot", "🤖 ReAct agent + Review": "react_review"}
 
 
 def _job_section(kind: str, unit: str, render_results) -> None:
@@ -289,35 +289,38 @@ else:
         )
         aug_mode = st.radio(
             "Generation mode",
-            ["🎯 One-shot", "🤖 ReAct agent", "🔄 Generate + Review"],
-            index=2,
+            ["🎯 One-shot", "🤖 ReAct agent + Review"],
+            index=1,
             horizontal=True, key="aug_mode",
             help=(
-                "**One-shot**: single LLM call.  "
-                "**ReAct agent**: iterative with run_snippet + check_similarity.  "
-                "**Generate + Review**: generator → reviewer → fix loop (up to 3 fix cycles). "
-                "Reviewer scores on 5 criteria; must reach 75/100 to pass. "
-                "Generator knows the seed's gold answer and prior variants."
+                "**One-shot**: a single LLM call per candidate.  "
+                "**ReAct agent + Review**: the generator works as an agent (it tests its code "
+                "with run_snippet and checks similarity), then a reviewer scores the draft on "
+                "5 criteria; below 75/100 the feedback goes back into the same conversation "
+                "and the agent revises. The generator knows the seed's gold answer, the earlier "
+                "variants of the seed, and what SMEs rejected and approved on other samples."
             ),
         )
         aug_loops = None
         aug_fix_iters = None
-        if aug_mode == "🤖 ReAct agent":
-            aug_loops = st.slider("Max agent loops", 1, 6, 3, key="aug_loops")
-        elif aug_mode == "🔄 Generate + Review":
-            aug_fix_iters = st.slider(
+        if aug_mode == "🤖 ReAct agent + Review":
+            col_loops, col_fix = st.columns(2)
+            aug_loops = col_loops.slider(
+                "Max agent loops per draft", 1, 6, 3, key="aug_loops",
+                help="Tool-call rounds the agent may use before it must submit a draft.",
+            )
+            aug_fix_iters = col_fix.slider(
                 "Max fix iterations", 1, 4, 3, key="aug_fix_iters",
-                help="How many times the generator can revise after reviewer feedback."
+                help="How many times the agent can revise after reviewer feedback.",
             )
 
         _total_cands = int(aug_limit) * int(aug_each)
         if aug_mode == "🎯 One-shot":
             _est = _total_cands * (1 + int(aug_k))
-        elif aug_mode == "🤖 ReAct agent":
-            _est = _total_cands * (int(aug_loops or 3) + int(aug_k))
-        else:  # Generate + Review
-            # (1 gen + 1 review) × fix_iters + k calibration
-            _est = _total_cands * ((int(aug_fix_iters or 3) + 1) * 2 + int(aug_k))
+        else:  # ReAct agent + Review: up to (fix + 1) drafts, each loops rounds + 1 review call
+            _est = _total_cands * (
+                (int(aug_fix_iters or 3) + 1) * (int(aug_loops or 3) + 1) + int(aug_k)
+            )
         st.caption(
             f"~{_est} API calls ({_total_cands} candidate(s)) ≈ **{round(_est*_AVG/60,1)} min**"
         )

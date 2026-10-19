@@ -293,6 +293,7 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
     from frontier_lens.generate import (
         generate_similar_questions,
         generate_similar_react,
+        generate_similar_react_review,
         generate_similar_with_review,
     )
 
@@ -313,6 +314,7 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
                 "candidate_id": fields.get("candidate_id") or "",
                 "status": fields.get("status"),
                 "pass_rate": fields.get("pass_rate"),
+                "reason": fields.get("auto_reject_reason"),
             })
         return False
 
@@ -320,7 +322,12 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
     for missing, seeds in sorted(by_missing.items()):
         common = {"run_id": cfg["run_id"], "n_each": missing,
                   "log_fn": log_fn, "calibration_k": cfg["calibration_k"]}
-        if cfg["mode"] == "review":
+        if cfg["mode"] == "react_review":
+            generate_similar_react_review(
+                seeds, max_loops=cfg["max_loops"],
+                max_fix_iterations=cfg["max_fix_iterations"], **common,
+            )
+        elif cfg["mode"] == "review":
             generate_similar_with_review(
                 seeds, max_fix_iterations=cfg["max_fix_iterations"], **common
             )

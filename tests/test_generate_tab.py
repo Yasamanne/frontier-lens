@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace as NS
 
 from sqlalchemy import text
 from streamlit.testing.v1 import AppTest
 
 from frontier_lens import runstate
 from frontier_lens.db import get_engine
-from frontier_lens.generate import calibration
+from frontier_lens.generate import calibration, similar
 from frontier_lens.generate.calibration import estimate_pass_rate
 from frontier_lens.generate.candidates import _store_candidate
 from frontier_lens.providers.base import Completion
@@ -181,3 +182,182 @@ def test_approving_a_candidate_with_bad_output_does_not_promote_it():
             text("SELECT COUNT(*) FROM questions WHERE source='generated'")
         ).scalar()
     assert (status, reason, n_questions) == ("auto_rejected", "multi_line_output", 0)
+
+
+# ── ReAct agent + Review (the merged augmentation mode) ─────────────────
+
+SEED = {"id": "seed1", "stem": "seed stem", "key": "7", "numeric": 1,
+        "topic": "python_state", "band": "hard"}
+
+
+def _draft(stem="new stem", code="print(4)\n"):
+    return {"stem": stem, "lang": "python", "code": code, "topic": "python_state",
+            "band": "hard", "numeric": True}
+
+
+def _call(call_id, name, args):
+    return NS(id=call_id, function=NS(name=name, arguments=json.dumps(args)))
+
+
+class FakeAgentClient:
+    """Each chat call answers with the next scripted list of tool calls (None = no tool call)."""
+
+    def __init__(self, rounds):
+        self.rounds = iter(rounds)
+        self.seen: list[list] = []
+        self.chat = NS(completions=NS(create=self._create))
+
+    def _create(self, **kw):
+        self.seen.append(list(kw["messages"]))
+        calls = next(self.rounds, None)
+        return NS(choices=[NS(message=NS(tool_calls=calls, content=""))])
+
+
+class FakeJudge:
+    def __init__(self, scores):
+        self.scores = iter(scores)
+        self.prompts: list[str] = []
+
+    def complete(self, prompt, model, **kw):
+        self.prompts.append(prompt)
+        score = next(self.scores)
+        body = {"score": score, "passed": score >= 75, "criterion_scores": {},
+                "issues": [] if score >= 75 else ["too close to the seed"],
+                "fix_instructions": "make it more different"}
+        return Completion(text=json.dumps(body), latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+def _run_react_review(rounds, scores, monkeypatch, **kw):
+    sync_models()
+    monkeypatch.setattr(similar, "sme_feedback_for", lambda *a, **k: "SME-FEEDBACK-MARKER")
+    client, judge = FakeAgentClient(rounds), FakeJudge(scores)
+    replies = iter(["FINAL: 4", "FINAL: 9"] * 4)  # half right: in the band
+    results = similar.generate_similar_react_review(
+        [SEED], max_loops=3, calibration_k=2, complete_fn=lambda _p: next(replies),
+        _client=client, _judge_provider=judge, **kw,
+    )
+    return results, client, judge
+
+
+def _candidates():
+    with get_engine().connect() as conn:
+        return [dict(r) for r in conn.execute(
+            text("SELECT stem, code, status, generator_mode, source_fail_ids FROM candidates")
+        ).mappings()]
+
+
+def test_react_review_agent_tests_its_code_then_a_passing_draft_is_stored(monkeypatch):
+    sync_models()
+    with get_engine().begin() as conn:  # an earlier variant of the same seed
+        conn.execute(text(
+            "INSERT INTO candidates (id, stem, status, generator_mode, source_fail_ids, topic, band) "
+            "VALUES ('old', 'OLD VARIANT STEM', 'pending', 'similar_augment', '[\"seed1\"]', "
+            "'python_state', 'hard')"))
+    rounds = [
+        [_call("1", "run_snippet", {"lang": "python", "code": "print(4)\n"})],
+        [_call("2", "submit_draft", _draft())],
+    ]
+    results, client, judge = _run_react_review(rounds, [85], monkeypatch)
+
+    assert [(r["status"], r["reason"]) for r in results] == [("pending", None)]
+    stored = [c for c in _candidates() if c["stem"] == "new stem"]
+    assert len(stored) == 1
+    assert (stored[0]["generator_mode"], json.loads(stored[0]["source_fail_ids"])) == (
+        "similar_augment", ["seed1"])
+    first_prompt = client.seen[0][0]["content"]
+    assert "SME-FEEDBACK-MARKER" in first_prompt          # SME feedback from other samples
+    assert "OLD VARIANT STEM" in first_prompt             # earlier variants of this seed
+    assert "Gold answer of the seed" in first_prompt and "7" in first_prompt
+    assert "SME-FEEDBACK-MARKER" in judge.prompts[0]      # the reviewer sees it too
+    tool_msgs = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "tool"]
+    assert json.loads(tool_msgs[0]["content"])["ok"] is True   # run_snippet really ran
+
+
+def test_react_review_failed_review_goes_back_into_the_same_conversation(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft("first stem"))],
+              [_call("2", "submit_draft", _draft("second stem"))]]
+    results, client, judge = _run_react_review(rounds, [60, 90], monkeypatch)
+
+    assert [r["status"] for r in results] == ["pending"]
+    assert [c["stem"] for c in _candidates()] == ["second stem"]
+    feedback = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "REVIEWER FEEDBACK" in feedback["content"] and "too close to the seed" in feedback["content"]
+    assert len(judge.prompts) == 2
+
+
+def test_react_review_stores_nothing_when_no_draft_reaches_the_pass_mark(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft())], [_call("2", "submit_draft", _draft())]]
+    results, _, _ = _run_react_review(rounds, [50, 55], monkeypatch, max_fix_iterations=1)
+    assert [r["status"] for r in results] == ["review_failed"]
+    assert "2 drafts" in results[0]["reason"]
+    assert _candidates() == []
+
+
+def test_react_review_agent_that_never_submits_is_handled(monkeypatch):
+    results, _, judge = _run_react_review([None], [], monkeypatch, max_fix_iterations=0)
+    assert [r["status"] for r in results] == ["review_failed"]
+    assert judge.prompts == [] and _candidates() == []
+
+
+def test_react_review_bad_sandbox_output_never_reaches_the_reviewer(monkeypatch):
+    rounds = [[_call("1", "submit_draft", _draft(code="print(1)\nprint(2)\n"))],
+              [_call("2", "submit_draft", _draft("fixed stem"))]]
+    results, client, judge = _run_react_review(rounds, [88], monkeypatch)
+    assert [r["status"] for r in results] == ["pending"]
+    assert len(judge.prompts) == 1                      # only the runnable draft was reviewed
+    fix = [m for m in client.seen[1] if isinstance(m, dict) and m.get("role") == "user"][-1]
+    assert "multi_line_output" in fix["content"]
+
+
+# ── the augment job: dispatch and the saved reject reason ───────────────
+
+def test_augment_job_dispatches_react_review_and_keeps_the_reject_reason(monkeypatch):
+    from frontier_lens import jobs
+
+    got: dict = {}
+
+    def fake(seeds, *, max_loops, max_fix_iterations, log_fn, **common):
+        got.update(seeds=seeds, max_loops=max_loops, max_fix_iterations=max_fix_iterations)
+        log_fn("similar_result", source_id="seed1", candidate_id="c1", status="auto_rejected",
+               pass_rate=1.0, auto_reject_reason="out_of_band")
+
+    monkeypatch.setattr("frontier_lens.generate.generate_similar_react_review", fake)
+    monkeypatch.setattr(jobs, "_log_fn", lambda job_id, fmt, on_event: (
+        lambda event, **fields: on_event(event, fields)))
+    res = NS(items=[], skipped=[], add=lambda item, skipped=False: res.items.append(item))
+    cfg = {"run_id": "r", "mode": "react_review", "seeds": [SEED], "n_each": 1,
+           "calibration_k": 2, "max_loops": 4, "max_fix_iterations": 2}
+    jobs._run_augment("job1", cfg, res)
+
+    assert (got["max_loops"], got["max_fix_iterations"]) == (4, 2)
+    assert [(i["status"], i["reason"]) for i in res.items] == [("auto_rejected", "out_of_band")]
+
+
+def test_augmentation_controls_offer_one_shot_and_the_merged_mode():
+    sync_models()
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO questions (id, topic, level, band, split, template, params_json, stem, "
+            "code, lang, input_files_json, key, numeric, source) VALUES "
+            "('q1', 't', 2, 'standard', 'train', 't', '{}', 'stem', 'print(4)', 'python', "
+            "'{}', '4', 1, 'seed')"))
+    _completed_run("run1", "gemma4-26b-a4b", "2026-10-02T00:00:00+00:00")
+    with get_engine().begin() as conn:  # one right and one wrong sample: in the band
+        conn.execute(text(
+            "INSERT INTO attempts (run_id, model_id, question_id, sample_index, raw_output, "
+            "parsed_answer, is_correct, unparsable) VALUES "
+            "('run1', 'gemma4-26b-a4b', 'q1', 2, 'FINAL: 9', '9', 0, 0)"))
+
+    at = AppTest.from_file(PAGE, default_timeout=60)
+    at.session_state["role"] = "Organizer"
+    at.run()
+    assert not at.exception
+    assert list(at.radio(key="aug_mode").options) == ["🎯 One-shot", "🤖 ReAct agent + Review"]
+    assert at.radio(key="aug_mode").value == "🤖 ReAct agent + Review"
+    assert at.slider(key="aug_loops").value == 3 and at.slider(key="aug_fix_iters").value == 3
+    # 1 candidate: (3 fix + 1 drafts) x (3 loops + 1 review) + k=4 calibration = 20 calls
+    assert any("~20 API calls" in c.value for c in at.caption)
+
+    at.radio(key="aug_mode").set_value("🎯 One-shot").run()
+    assert not at.exception
+    assert any("~5 API calls" in c.value for c in at.caption)  # 1 + k

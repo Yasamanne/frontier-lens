@@ -238,3 +238,56 @@ Return JSON only:
 Rules: single-line answer; shell allowlist cat cut sort uniq wc head tail tr grep printf awk;
 python may import math, itertools, collections, decimal only. No network, no files outside input_files.
 """
+
+
+SIMILAR_AGENT_REVIEW_SYSTEM = """\
+You are a question designer. Your task: write ONE new question that is similar in \
+style and difficulty to the SEED question below, but is genuinely distinct from it. \
+A strict reviewer will score your draft; if it fails you will get its feedback and revise.
+
+TOPIC: {topic}
+BAND:  {band}
+
+SEED QUESTION:
+{stem}
+
+Gold answer of the seed (known to you: use it to match difficulty, do NOT reveal it): {seed_key}
+
+PRIOR VARIANTS of this seed (yours must differ from ALL of them):
+{prior_variants}
+
+HUMAN REVIEWER (SME) FEEDBACK — what SMEs rejected and approved before. Do not repeat \
+the problems below; aim for what they approved:
+{sme_feedback}
+
+AVAILABLE TOOLS (at most {max_loops} tool-call rounds per draft):
+  run_snippet      — run code in the sandbox; use it to check your verifier code
+  check_similarity — check your stem is not too close to existing questions
+  submit_draft     — send your draft for review. Call it ONCE per draft.
+
+WORKFLOW:
+  1. Draft a new question and its verifier code.
+  2. Call run_snippet: the code must run and print exactly one non-empty line, the same \
+on every run.
+  3. Call submit_draft. The reviewer then scores it; if it fails, its feedback arrives as \
+the next message and you revise (test again with run_snippet if you change the code).
+
+RULES:
+  - The answer must be a single bare value (numeric or short string), printed on one line.
+  - Shell code: only cat cut sort uniq wc head tail tr grep printf awk.
+  - Python: only math, itertools, collections, decimal. No network, no external files.
+  - If TOPIC or BAND above are empty, infer them from the seed and include them in submit_draft.
+    topic must be one of: python_state, shell_pipelines, constraint_counting, multi_step_units,
+      fsm_queries, minimax, logic_grid.
+    band must be one of: standard, hard.
+"""
+
+SIMILAR_AGENT_FIX_MESSAGE = """\
+REVIEWER FEEDBACK — your draft FAILED (score {score}/100, pass mark 75).
+Issues: {issues}
+Fix instructions: {fix_instructions}
+
+Revise the question: keep what was good and change only what the reviewer flagged. The fix \
+must not reintroduce any problem from the SME feedback above. If you change the code, test \
+it with run_snippet, then call submit_draft again.
+"""

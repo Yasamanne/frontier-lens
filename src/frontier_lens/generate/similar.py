@@ -16,6 +16,8 @@ from frontier_lens.sandbox import execute
 from .candidates import _store_candidate
 from .prompts import (
     MAX_FIX_ITERATIONS,
+    SIMILAR_AGENT_FIX_MESSAGE,
+    SIMILAR_AGENT_REVIEW_SYSTEM,
     SIMILAR_AGENT_SYSTEM,
     SIMILAR_FIX_PROMPT,
     SIMILAR_QUESTION_PROMPT,
@@ -680,4 +682,315 @@ def generate_similar_with_review(
     n_pending = sum(1 for r in results if r["status"] == "pending")
     _log("similar_end", n_total=total, n_pending=n_pending,
          n_rejected=total - n_pending)
+    return results
+
+
+# ── ReAct agent + Generate + Review ──────────────────────────────────────
+
+_SUBMIT_DRAFT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_draft",
+        "description": "Send the finished draft for review (call once per draft)",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stem": {"type": "string"},
+                "lang": {"type": "string"},
+                "code": {"type": "string"},
+                "input_files": {"type": "object"},
+                "numeric": {"type": "boolean"},
+                "topic": {"type": "string"},
+                "band": {"type": "string"},
+            },
+            "required": ["stem", "lang", "code", "topic", "band"],
+        },
+    },
+}
+
+
+def _react_review_tools() -> list[dict]:
+    """run_snippet and check_similarity, plus submit_draft (hands the draft to the reviewer).
+
+    There is no tool that stores a candidate or calls the policy: storing and calibration
+    happen only after the reviewer passes the draft.
+    """
+    from frontier_lens.agent.tools import BASE_TOOLS
+
+    allowed = {"run_snippet", "check_similarity"}
+    return [t for t in BASE_TOOLS if t["function"]["name"] in allowed] + [_SUBMIT_DRAFT_TOOL]
+
+
+def _prior_variants_for_seed(seed_id: str, limit: int = 6) -> list[str]:
+    """Stems of earlier pending or approved variants of this seed (newest first)."""
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT stem FROM candidates
+                WHERE source_fail_ids LIKE :pat AND status IN ('pending', 'approved')
+                  AND generator_mode = 'similar_augment'
+                ORDER BY created_at DESC LIMIT :n
+                """
+            ),
+            {"pat": f'%"{seed_id}"%', "n": limit},
+        ).scalars().all()
+    return [(r or "")[:300] for r in rows]
+
+
+def _agent_draft(
+    messages: list,
+    client,
+    gen,
+    toolset: list[dict],
+    *,
+    source_q: dict,
+    run_id: str | None,
+    max_loops: int,
+    log_fn,
+    calibration_k: int | None,
+) -> dict | None:
+    """Run up to *max_loops* tool rounds; return the arguments of ``submit_draft`` or None.
+
+    *messages* is extended in place, so the next call continues the same conversation.
+    """
+    from frontier_lens.agent.tools import handle
+
+    for step in range(max_loops):
+        try:
+            with call_slot():
+                resp = client.chat.completions.create(
+                    model=gen.model, messages=messages, tools=toolset, timeout=120,
+                )
+        except Exception as exc:
+            log_fn("agent_error", step=step + 1, error=str(exc))
+            return None
+        msg = resp.choices[0].message
+        if not msg.tool_calls:
+            log_fn("agent_no_tool_call", step=step + 1, content=(msg.content or "")[:200])
+            return None
+        messages.append(msg)
+        draft: dict | None = None
+        for call in msg.tool_calls:
+            try:
+                args = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            name = call.function.name
+            log_fn("agent_tool_call", step=step + 1, tool=name,
+                   args_preview={k: str(v)[:120] for k, v in args.items()})
+            if name == "submit_draft":
+                draft = args
+                result = json.dumps({"received": True, "next": "the reviewer scores this draft"})
+            else:
+                result = handle(
+                    name, args, gen_id=gen.id, fail_model=source_q["id"], run_id=run_id,
+                    rl_split="train", log_fn=log_fn, calibration_k=calibration_k,
+                )
+            log_fn("agent_tool_result", step=step + 1, tool=name, result_preview=result[:300])
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+        if draft is not None:
+            return draft
+    return None
+
+
+def generate_similar_react_review(
+    source_questions: list[dict],
+    *,
+    run_id: str | None = None,
+    n_each: int = 1,
+    max_loops: int = 3,
+    max_fix_iterations: int = MAX_FIX_ITERATIONS,
+    calibration_k: int | None = None,
+    complete_fn=None,
+    log_fn=None,
+    _client=None,
+    _judge_provider=None,
+) -> list[dict]:
+    """ReAct agent drafts, a reviewer scores, the agent revises: then sandbox, calibrate, SME.
+
+    For each variant of each seed:
+
+    1. The generator model runs as a tool-using agent (``run_snippet``, ``check_similarity``,
+       ``submit_draft``; up to *max_loops* tool rounds per draft). Its prompt carries the
+       seed, its gold answer, the earlier variants of the seed (this run and pending or
+       approved ones in the database) and the SME feedback (``feedback.context_for``:
+       what SMEs rejected and approved on other samples).
+    2. The draft's code runs in the sandbox (twice, one non-empty line of output).
+    3. The reviewer (judge model) scores five criteria; 75 of 100 passes. The SME feedback
+       is in the reviewer's prompt too, and repeating a flagged problem caps the score.
+    4. A failed draft sends the reviewer's issues back into the *same conversation* and the
+       agent revises, up to *max_fix_iterations* times.
+    5. A passed draft is stored with calibration; the band filter in ``_store_candidate``
+       rejects it if the policy always or never solves it.
+
+    Returns the same result-dict schema as :func:`generate_similar_with_review`.
+    """
+    import os as _os
+
+    from openai import OpenAI
+
+    from frontier_lens.registry import judge_spec as _judge_spec_fn
+
+    def _log(event: str, **fields):
+        if log_fn:
+            log_fn(event, **fields)
+
+    k = calibration_k if calibration_k is not None else POLICY_K
+    specs = {m.id: m for m in sync_models()}
+    gen = next((m for m in specs.values() if m.role == "generator"), None)
+    if gen is None:
+        raise RuntimeError("No generator model configured in models.yaml.")
+    judge = _judge_spec_fn()
+    if judge is None:
+        raise RuntimeError(
+            "No judge model configured in models.yaml (role: judge). "
+            "Add a judge entry to use ReAct + Review mode."
+        )
+    client = _client
+    if client is None:
+        api_key = _os.getenv(gen.api_key_env or "", "") if gen.api_key_env else "ollama"
+        client = OpenAI(base_url=gen.base_url, api_key=api_key or "ollama", timeout=120)
+    judge_provider = _judge_provider or OpenAICompatibleProvider(
+        judge.base_url or "", judge.api_key_env
+    )
+    toolset = _react_review_tools()
+    engine = get_engine()
+    total = len(source_questions) * n_each
+    _log("similar_start", n_seeds=len(source_questions), n_each=n_each, total_candidates=total,
+         calibration_k=k, mode="react_review", max_loops=max_loops,
+         max_fix_iterations=max_fix_iterations)
+
+    def _one_seed(item: tuple[int, dict], _log) -> list[dict]:
+        """Worker: all n_each variants of one seed, one after another (each sees the earlier)."""
+        seed_i, q = item
+        sme_feedback = sme_feedback_for(q.get("topic"), source_id=q["id"])
+        prior_stems = _prior_variants_for_seed(q["id"])
+        results: list[dict] = []
+        for attempt in range(n_each):
+            idx = seed_i * n_each + attempt + 1
+            _log("similar_generate", index=idx, total=total, source_id=q["id"],
+                 topic=q["topic"], band=q["band"], attempt=attempt,
+                 stem_preview=(q.get("stem") or "")[:120])
+            prior_block = "\n".join(
+                f"  Variant {i + 1}: {stem[:200]}" for i, stem in enumerate(prior_stems)
+            ) or "  (none yet)"
+            messages: list = [{"role": "user", "content": SIMILAR_AGENT_REVIEW_SYSTEM.format(
+                topic=_label_or_infer(q.get("topic"), "topic"),
+                band=_label_or_infer(q.get("band"), "band"),
+                stem=(q.get("stem") or "")[:1200],
+                seed_key=q.get("key", ""),
+                prior_variants=prior_block,
+                sme_feedback=sme_feedback,
+                max_loops=max_loops,
+            )}]
+            review_result: dict = {}
+            draft: dict | None = None
+            passed = False
+            for fix_iter in range(max_fix_iterations + 1):
+                if fix_iter == 0:
+                    _log("review_generate", index=idx, fix_iter=0, source_id=q["id"],
+                         has_sme_feedback=sme_feedback != NO_FEEDBACK)
+                else:
+                    messages.append({"role": "user", "content": SIMILAR_AGENT_FIX_MESSAGE.format(
+                        score=review_result.get("score", 0),
+                        issues="; ".join(review_result.get("issues", [])) or "(none listed)",
+                        fix_instructions=review_result.get("fix_instructions", ""),
+                    )})
+                    _log("review_fix", index=idx, fix_iter=fix_iter, source_id=q["id"],
+                         score=review_result.get("score"), issues=review_result.get("issues", []))
+                draft = _agent_draft(
+                    messages, client, gen, toolset, source_q=q, run_id=run_id,
+                    max_loops=max_loops, log_fn=lambda e, _i=idx, **f: _log(
+                        e, source_id=q["id"], agent_index=_i, **f),
+                    calibration_k=calibration_k,
+                )
+                if not draft or not draft.get("stem") or not draft.get("code"):
+                    draft = None
+                    review_result = {
+                        "score": 0, "passed": False, "criterion_scores": {},
+                        "issues": ["No usable draft was submitted"],
+                        "fix_instructions": "Call submit_draft with stem, lang, code, topic and band.",
+                    }
+                    _log("review_sandbox", index=idx, fix_iter=fix_iter, ok=False,
+                         reason="no_draft")
+                    continue
+                lang = draft.get("lang") or "python"
+                files = draft.get("input_files") or {}
+                sandbox_result = execute(lang, draft["code"], files, twice=True, single_line=True)
+                _log("review_sandbox", index=idx, fix_iter=fix_iter,
+                     ok=sandbox_result.ok, reason=sandbox_result.reason)
+                if not sandbox_result.ok:
+                    review_result = {
+                        "score": 0, "passed": False, "criterion_scores": {},
+                        "issues": [f"Sandbox error: {sandbox_result.reason}"],
+                        "fix_instructions": (
+                            "Fix the code so it runs without errors and prints exactly one "
+                            "non-empty line, the same on every run."
+                        ),
+                    }
+                    continue
+                _log("review_start", index=idx, fix_iter=fix_iter, source_id=q["id"],
+                     stem_preview=draft["stem"][:120])
+                review_result = _review_similar_question(
+                    stem=draft["stem"], code=draft["code"], lang=lang,
+                    computed_key=sandbox_result.stdout,
+                    seed_stem=q["stem"], seed_key=q.get("key", ""),
+                    band=_label_or_infer(q.get("band"), "band"),
+                    prior_stems=prior_stems, sme_feedback=sme_feedback,
+                    provider=judge_provider, model=judge.model,
+                )
+                _log("review_result", index=idx, fix_iter=fix_iter, source_id=q["id"],
+                     score=review_result["score"], passed=review_result["passed"],
+                     criterion_scores=review_result["criterion_scores"],
+                     issues=review_result["issues"])
+                if review_result["passed"]:
+                    passed = True
+                    break
+
+            if passed and draft:
+                raw = json.dumps({
+                    "stem": draft["stem"], "lang": draft.get("lang") or "python",
+                    "code": draft["code"], "input_files": draft.get("input_files") or {},
+                    "numeric": bool(draft.get("numeric", True)),
+                    "topic": draft.get("topic") or "", "band": draft.get("band") or "",
+                })
+
+                def _cal_log(event: str, _sid=q["id"], _att=attempt, **fields):
+                    _log(event, source_id=_sid, attempt=_att, **fields)
+
+                cid = _store_candidate(
+                    raw, q["topic"], q["band"], gen.id, "similar_augment", [q["id"]],
+                    run_id=run_id, rl_split="train", calibrate=True,
+                    complete_fn=complete_fn, log_fn=_cal_log, calibration_k=k,
+                )
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text("SELECT status, policy_pass_rate, auto_reject_reason "
+                             "FROM candidates WHERE id=:id"),
+                        {"id": cid},
+                    ).mappings().first()
+                status = row["status"] if row else "unknown"
+                rate = row["policy_pass_rate"] if row else None
+                reject_reason = row["auto_reject_reason"] if row else None
+                prior_stems.append(draft["stem"][:300])
+            else:
+                cid, status, rate = None, "review_failed", None
+                reject_reason = (
+                    f"did not reach score >= 75 in {max_fix_iterations + 1} drafts"
+                )
+            _log("similar_result", source_id=q["id"], candidate_id=cid or "", status=status,
+                 pass_rate=rate, auto_reject_reason=reject_reason,
+                 review_score=review_result.get("score"))
+            results.append({"source_id": q["id"], "candidate_id": cid or "", "status": status,
+                            "pass_rate": rate, "reason": reject_reason})
+        return results
+
+    # Seeds are independent: run them concurrently; events reach log_fn on this thread.
+    results = [
+        r for seed_results in map_with_events(_one_seed, enumerate(source_questions), log_fn)
+        for r in seed_results
+    ]
+    n_pending = sum(1 for r in results if r["status"] == "pending")
+    _log("similar_end", n_total=total, n_pending=n_pending, n_rejected=total - n_pending)
     return results
