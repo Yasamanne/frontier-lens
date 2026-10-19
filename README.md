@@ -4,11 +4,9 @@ A small RL data engine for open-weight models. It measures a policy model on exe
 
 ## Overview
 
-Frontier Lens is a data-curation pipeline for improving a language model through reinforcement learning (RL). It benchmarks a target model on questions with execution-verified answers, locates its failure modes, and produces new training questions calibrated to the model's current capability. Every generated question passes subject-matter expert (SME) review before it is accepted into the dataset.
-
 ### Purpose
 
-A model gains the most from prompts it solves some of the time. Prompts it always solves or never solves yield no gradient signal during RL training. Frontier Lens measures the pass rate of each question on the target model and retains or synthesises questions in the productive range, referred to here as the *learnable band*.
+A model gains the most from prompts it solves some of the time. Prompts it always solves or never solves yield no gradient signal during RL training (in GRPO, identical rewards in a group give zero advantage). Frontier Lens measures the pass rate of each question on the target model and keeps or builds questions in the productive range, the *learnable band* (`0 < pass_rate < 1`).
 
 ### Inputs
 
@@ -52,7 +50,6 @@ Models answer tasks in plain text and must not run code. The gold key is the std
 
 ## The problem
 
-- **Signal.** RL post-training (e.g. GRPO) learns only from prompts the policy *sometimes* solves. If all sampled completions get the same reward, the group advantage is zero and there is no gradient. Useful tasks sit in the **learnable band** `0 < pass_rate < 1`.
 - **Static benchmarks are a poor source.** They saturate, leak into pretraining, give one score instead of a map of weaknesses, and often have keys you cannot verify.
 - **Rewards are easy to game.** A reward that accepts hedges ("42 or 43") or the first answer line teaches the policy to game it.
 - **Human review is the expensive part.** Reviewing every item does not scale, and reviewer judgements are usually thrown away instead of improving the next batch.
