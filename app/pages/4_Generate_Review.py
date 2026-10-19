@@ -61,8 +61,7 @@ from frontier_lens.feedback import context_for as sme_feedback_for
 
 # ── Run / model selectors ─────────────────────────────────────────────────
 with engine.connect() as conn:
-    _all_runs   = conn.execute(text("SELECT id, created_at FROM eval_runs WHERE status='complete' ORDER BY created_at DESC")).all()
-    _all_models = conn.execute(text("SELECT DISTINCT model_id FROM attempts")).scalars().all()
+    _all_runs = conn.execute(text("SELECT id, created_at FROM eval_runs WHERE status='complete' ORDER BY created_at DESC")).all()
 
 if not _all_runs:
     st.info("No completed eval runs yet. Run an evaluation first.")
@@ -77,6 +76,15 @@ _run_id = st.selectbox(
     ),
     key="gen_run_sel2",
 )
+# Only models that have samples in the chosen run.
+with engine.connect() as conn:
+    _all_models = conn.execute(
+        text("SELECT DISTINCT model_id FROM attempts WHERE run_id = :r ORDER BY 1"),
+        {"r": _run_id},
+    ).scalars().all()
+if not _all_models:
+    st.info("This run has no samples yet.")
+    st.stop()
 _pol_id   = policy_spec().id
 _def_mi   = list(_all_models).index(_pol_id) if _pol_id in list(_all_models) else 0
 _model_id = st.selectbox("Model", list(_all_models), index=_def_mi, key="gen_model_sel2")
@@ -172,6 +180,7 @@ def _render_augment_results(row: dict) -> None:
     st.dataframe(
         [{"source_id": r["source_id"][:14], "candidate_id": r["candidate_id"],
           "status": r["status"],
+          "reason": r.get("reason") or "—",
           "pass_rate": round(r["pass_rate"], 3) if r["pass_rate"] is not None else None}
          for r in results],
         width="stretch",
@@ -246,7 +255,8 @@ st.divider()
 st.subheader("🟡 RL-suitable augmentation  (0 < correct < k)")
 st.caption(
     "Questions already in the learnable band. The generator produces similar-but-distinct "
-    "questions. RL-suitable ones land in the SME Queue below."
+    "questions. Each is calibrated on the policy: candidates the policy always or never "
+    "solves are rejected automatically (`out_of_band`); only in-band ones land in the SME Queue below."
 )
 
 rl_qs = rl_suitable_questions(_run_id, _model_id)

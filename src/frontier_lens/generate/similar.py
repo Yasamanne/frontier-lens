@@ -321,6 +321,7 @@ def generate_similar_questions(
             "candidate_id": cid,
             "status": status,
             "pass_rate": rate,
+            "reason": reject_reason,
         }
 
     # Seeds/attempts are independent — run concurrently; events reach log_fn
@@ -439,6 +440,7 @@ def generate_similar_react(
             "candidate_id": candidate_id or "",
             "status": status,
             "pass_rate": rate,
+            "reason": reject_reason,
         }
 
     # Seeds/attempts are independent — run concurrently; events reach log_fn
@@ -662,6 +664,7 @@ def generate_similar_with_review(
                 "candidate_id": cid or "",
                 "status": status,
                 "pass_rate": rate,
+                "reason": reject_reason,
             })
         return seed_results
 

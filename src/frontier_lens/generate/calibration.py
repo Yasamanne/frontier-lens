@@ -9,6 +9,13 @@ from frontier_lens.reward import grade
 from frontier_lens.stats import in_learnable_band, pass_at_k, pass_rate
 
 
+def _policy_complete(provider, policy, prompt: str) -> str:
+    """One policy sample with the same settings Evaluate uses (thinking flag, output cap)."""
+    return provider.complete(
+        prompt, policy.model, thinking=bool(policy.thinking), max_tokens=policy.max_tokens
+    ).text
+
+
 def estimate_pass_rate(
     stem: str,
     key: str,
@@ -32,7 +39,7 @@ def estimate_pass_rate(
         provider = OpenAICompatibleProvider(policy.base_url or "", policy.api_key_env)
 
         def complete_fn(prompt: str) -> str:
-            return provider.complete(prompt, policy.model).text
+            return _policy_complete(provider, policy, prompt)
 
     def _sample(_i: int) -> int:
         reward, _, _ = grade(complete_fn(contest_prompt(stem)), key, numeric)
@@ -77,7 +84,7 @@ def _calibrate_collect(
         provider = OpenAICompatibleProvider(policy.base_url or "", policy.api_key_env)
 
         def complete_fn(prompt: str) -> str:
-            return provider.complete(prompt, policy.model).text
+            return _policy_complete(provider, policy, prompt)
 
     def _sample(_i: int) -> tuple[str, int, str | None]:
         raw = complete_fn(contest_prompt(stem))

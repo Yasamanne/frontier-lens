@@ -12,6 +12,11 @@ from frontier_lens.sandbox import execute
 from .calibration import estimate_pass_rate
 from .utils import _extract_json
 
+# Modes whose calibrated candidates must land in the learnable band (0 < pass rate < 1):
+# a question the policy always or never solves gives RL no signal, so it is rejected
+# before it reaches the SME queue.
+BAND_FILTERED_MODES = ("one_shot", "similar_augment")
+
 
 def _store_candidate(
     raw: str,
@@ -68,7 +73,7 @@ def _store_candidate(
                 )
                 rate = stats["pass_rate"]
                 pak = stats["pass_at_k"]
-                if mode == "one_shot" and not stats["in_learnable_band"]:
+                if mode in BAND_FILTERED_MODES and not stats["in_learnable_band"]:
                     status, reason = "auto_rejected", "out_of_band"
     engine = get_engine()
     with engine.begin() as conn:
