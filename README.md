@@ -276,7 +276,7 @@ From the local database (Oct 15–17, 36 evaluation runs with samples, 700 grade
 
 ## Time spent
 
-Approximately ⟨fill in⟩ hours over Oct 14–17, 2026.
+Approximately 25 hours over Oct 14–17, 2026.
 
 ## More documentation
 
