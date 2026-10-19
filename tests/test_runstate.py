@@ -376,3 +376,32 @@ def test_uncoded_question_is_rescued_with_a_hint_and_approved_with_its_own_key(t
         ).mappings().first()
     assert status == "approved"
     assert q["key"] == "42" and q["code"] == ""
+
+
+def test_stale_flag_is_cleared_when_a_model_solves_the_question_in_a_later_run(tmp_db):
+    _add_question(tmp_db, "was-flagged", "A")
+    _add_question(tmp_db, "still-failed", "B")
+    _add_question(tmp_db, "broken", "C")
+    with tmp_db.begin() as conn:
+        conn.execute(text(
+            "UPDATE questions SET sme_flagged=1, sme_source='evaluate' "
+            "WHERE id IN ('was-flagged','still-failed')"
+        ))
+        conn.execute(text("UPDATE questions SET sme_flagged=2 WHERE id='broken'"))
+    runstate.insert_run("r2", ["was-flagged", "still-failed", "broken"], 2, None, {}, status="complete")
+    _add_attempt(tmp_db, "r2", "was-flagged", 0, 0)
+    _add_attempt(tmp_db, "r2", "still-failed", 0, 0)
+    _add_attempt(tmp_db, "r2", "broken", 0, 0)
+    with tmp_db.begin() as conn:  # the verifier solved the first and the broken one
+        for qid in ("was-flagged", "broken"):
+            conn.execute(text(
+                "INSERT INTO attempts (run_id, model_id, question_id, sample_index, "
+                "raw_output, is_correct, unparsable) VALUES ('r2', 'ver', :q, 0, 'FINAL: x', 1, 0)"
+            ), {"q": qid})
+
+    n = eval_job.unflag_confirmed("r2", [POLICY, "ver"])
+
+    with tmp_db.connect() as conn:
+        flags = dict(conn.execute(text("SELECT id, sme_flagged FROM questions")).all())
+    assert n == 1
+    assert flags == {"was-flagged": 0, "still-failed": 1, "broken": 2}

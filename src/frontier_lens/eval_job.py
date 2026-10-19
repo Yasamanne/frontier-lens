@@ -131,6 +131,36 @@ def flag_for_sme(question_ids: list[str]) -> None:
             )
 
 
+def unflag_confirmed(run_id: str, model_ids: list[str]) -> int:
+    """Clear Evaluate flags on questions that some model solved in this run.
+
+    An earlier run may have flagged a question that nobody solved. If a model (the verifier,
+    or another selected model) now gets it right, the key is confirmed, so the flag no longer
+    holds it back from the dead-zone rescue. Flags an SME set (``sme_source`` other than
+    ``evaluate``), broken verdicts (2) and decided questions (0) are left alone.
+    """
+    if not model_ids:
+        return 0
+    ph = ",".join(f":m{i}" for i in range(len(model_ids)))
+    params: dict = {"r": run_id, **{f"m{i}": m for i, m in enumerate(model_ids)}}
+    with get_engine().begin() as conn:
+        res = conn.execute(
+            text(
+                f"""
+                UPDATE questions SET sme_flagged = 0
+                WHERE sme_flagged = 1 AND COALESCE(sme_source, 'evaluate') = 'evaluate'
+                  AND id IN (
+                      SELECT question_id FROM attempts
+                      WHERE run_id = :r AND model_id IN ({ph})
+                      GROUP BY question_id HAVING SUM(is_correct) > 0
+                  )
+                """
+            ),
+            params,
+        )
+    return res.rowcount or 0
+
+
 def run_job(run_id: str) -> None:
     """Primary contest, then verifier on all-wrong items, then SME flags. Idempotent."""
     cfg = runstate.run_config(runstate.load_run(run_id))
@@ -171,9 +201,9 @@ def run_job(run_id: str) -> None:
                         judge_model_id=cfg.get("judge_model_id"),
                     )
             runstate.set_fields(run_id, phase="flagging")
-            flag_for_sme(
-                runstate.zero_correct_questions(run_id, models + ([verifier] if verifier else []))
-            )
+            checked = models + ([verifier] if verifier else [])
+            flag_for_sme(runstate.zero_correct_questions(run_id, checked))
+            unflag_confirmed(run_id, checked)
             mark_complete(run_id)
         except Exception as exc:
             mark_failed(run_id, exc)
