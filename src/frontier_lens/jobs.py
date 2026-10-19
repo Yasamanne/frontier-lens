@@ -198,12 +198,13 @@ def format_augment_event(event: str, **f) -> str:
                 f"pass_rate={rate_str}{rev}{why}")
     if event == "hint_attempt_result":
         verdict = "in band: rescued ✓" if f.get("rl_suitable") else "not yet"
-        return (f"  💡 hint level {f.get('level')}: {f.get('n_correct')}/{f.get('n')} solved, "
-                f"pass_rate={f.get('pass_rate', 0):.2f}, {verdict}")
+        return (f"  💡 hint level {f.get('level')}: {f.get('n_correct')}/{f.get('n')} "
+                f"solved on {f.get('policy_model', '?')}, pass_rate={f.get('pass_rate', 0):.2f}, {verdict}")
     if event == "tune_result":
         verdict = "in band ✓" if f.get("in_band") else "out of band, asking the agent to retune"
         return (f"  🎯 calibration (round {f.get('round', 0)}): {f.get('n_correct')}/{f.get('n')} "
-                f"solved, pass_rate={f.get('pass_rate', 0):.2f}, {verdict}")
+                f"solved on {f.get('policy_model', '?')}, pass_rate={f.get('pass_rate', 0):.2f}, "
+                f"{verdict}")
     if event == "similar_end":
         return f"\n[DONE] pending={f.get('n_pending')}/{f.get('n_total')}"
     if event == "review_generate":

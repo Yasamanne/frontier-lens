@@ -1258,7 +1258,7 @@ def generate_similar_react_review(
                 )
                 _log("tune_result", source_id=q["id"], round=tune_round,
                      pass_rate=stats["pass_rate"], n_correct=stats["correct"], n=stats["n"],
-                     in_band=stats["in_learnable_band"])
+                     in_band=stats["in_learnable_band"], policy_model=stats["policy_model"])
                 last_calibrated = (draft, stats, key)
                 history.append({"stem": draft["stem"], "correct": stats["correct"], "n": stats["n"]})
                 last_round = tune_round == max_tune_rounds

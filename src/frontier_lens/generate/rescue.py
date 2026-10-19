@@ -105,7 +105,7 @@ def hint_ladder(
         })
         _log("hint_attempt_result", question_id=question_id, level=level,
              pass_rate=stats["pass_rate"], n_correct=stats["correct"], n=stats["n"],
-             rl_suitable=stats["in_learnable_band"])
+             rl_suitable=stats["in_learnable_band"], policy_model=stats["policy_model"])
 
         current_stem = hinted_stem  # the next level builds on this
         if stats["in_learnable_band"]:
