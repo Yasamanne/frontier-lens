@@ -242,7 +242,7 @@ role = st.radio(
 st.session_state["role"] = role
 
 ROLE_DESC = {
-    "Organizer": "Full access — run calibration, generate seeds, run contests, trigger generation.",
+    "Organizer": "Full access — run calibration, generate seeds, run evaluations, trigger generation.",
     "SME":       "Subject-matter expert — review audit samples and label candidates.",
     "Viewer":    "Read-only — replay mode only, no writes to the database.",
 }
