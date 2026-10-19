@@ -367,7 +367,8 @@ def test_augmentation_controls_offer_one_shot_and_the_merged_mode():
 
     at.radio(key="aug_mode").set_value("🎯 One-shot").run()
     assert not at.exception
-    assert any("~5 API calls" in c.value for c in at.caption)  # 1 + k
+    # one-shot, worst case: (1 generation + k=4 samples) + 3 hint levels x (1 hint call + 4 samples) = 20
+    assert any("up to ~20 API calls" in c.value for c in at.caption)
 
 
 def test_react_review_forces_submit_draft_on_the_last_round(monkeypatch):
@@ -899,3 +900,67 @@ def test_levers_go_both_ways():
     from frontier_lens.generate.prompts import HARDENING_LEVERS
 
     assert "Harder" in HARDENING_LEVERS and "Easier (undo" in HARDENING_LEVERS
+
+
+# ── calibration grades a policy reply exactly like the Evaluate tab ─────
+
+# every reply is for a question whose key is "13"; the five that match are marked True
+_PANEL = [("FINAL: 13", True), ("Final: 13", True), ("FINAL: $13$", True), ("FINAL: \\boxed{13}", True),
+          ("FINAL: 13.0", True), ("FINAL: 13 points", False), ("FINAL: 12", False),
+          ("no final line here", False), ("FINAL: 1, 3", False), ("FINAL: 13 or 14", False)]
+
+
+_PANEL_STATE: dict = {"next": 0, "calls": []}
+_PANEL_LOCK = __import__("threading").Lock()
+
+
+class _PanelProvider:
+    """Answers every call with the next panel reply and records how it was called."""
+
+    def __init__(self, *a, **k):
+        pass
+
+    def complete(self, prompt, model, **kw):
+        with _PANEL_LOCK:
+            reply = _PANEL[_PANEL_STATE["next"] % len(_PANEL)][0]
+            _PANEL_STATE["next"] += 1
+            _PANEL_STATE["calls"].append({"prompt": prompt, "model": model, **kw})
+        return Completion(text=reply, latency_ms=1, tokens_in=1, tokens_out=1)
+
+
+def test_calibration_and_evaluate_grade_the_same_replies_the_same_way(monkeypatch):
+    from frontier_lens import contest
+    from frontier_lens.generate import calibration
+    from frontier_lens.generate.calibration import _calibrate_collect
+
+    sync_models()
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO questions (id, topic, level, band, split, template, params_json, stem, "
+            "code, lang, input_files_json, key, numeric, source) VALUES "
+            "('q13', 't', 2, 'standard', 'train', 't', '{}', 'what is 6+7?', 'print(13)', 'python', "
+            "'{}', '13', 1, 'seed')"))
+    k = len(_PANEL)
+
+    # Evaluate: run_contest on the policy, k samples (no judge)
+    _PANEL_STATE.update(next=0, calls=[])
+    monkeypatch.setattr(contest, "OpenAICompatibleProvider", _PanelProvider)
+    run_id = contest.run_contest(["gemma4-26b-a4b"], k=k, question_ids=["q13"])
+    evaluate_calls = list(_PANEL_STATE["calls"])
+    with get_engine().connect() as conn:
+        evaluate_correct = conn.execute(
+            text("SELECT SUM(is_correct) FROM attempts WHERE run_id=:r"), {"r": run_id}).scalar()
+
+    # Generator calibration: the same replies, the same key, the same numeric flag
+    _PANEL_STATE.update(next=0, calls=[])
+    monkeypatch.setattr(calibration, "OpenAICompatibleProvider", _PanelProvider)
+    stats = _calibrate_collect("what is 6+7?", "13", True, k)
+    calibration_calls = list(_PANEL_STATE["calls"])
+
+    expected = sum(ok for _, ok in _PANEL)
+    assert (evaluate_correct, stats["correct"]) == (expected, expected) == (5, 5)
+    # same prompt, same model, same thinking flag and output cap, and neither uses the judge
+    assert {c["prompt"] for c in calibration_calls} == {c["prompt"] for c in evaluate_calls}
+    for field in ("model", "thinking", "max_tokens"):
+        assert {c[field] for c in calibration_calls} == {c[field] for c in evaluate_calls}, field
+    assert all(not c.get("skip_correction") for c in calibration_calls + evaluate_calls)

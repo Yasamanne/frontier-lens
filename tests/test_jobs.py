@@ -70,7 +70,7 @@ def test_augment_resume_tops_up_each_seed(tmp_db, monkeypatch):
 
     calls: list[tuple[int, list[str]]] = []
 
-    def fake_similar(seeds, *, run_id, n_each, log_fn, calibration_k):
+    def fake_similar(seeds, *, run_id, n_each, log_fn, calibration_k, max_hint_levels=3):
         calls.append((n_each, [s["id"] for s in seeds]))
         for s in seeds:
             for _ in range(n_each):

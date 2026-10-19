@@ -80,6 +80,9 @@ def generator_extra_body(gen) -> dict:
     switch the model's own default applies (some models think, some do not), so the
     ``thinking`` flag in models.yaml would have no effect.
     """
+    base_url = getattr(gen, "base_url", None)
+    if base_url and "openrouter.ai" not in base_url:
+        return {}  # the switch is OpenRouter's; other servers may reject an unknown field
     return {"reasoning": {"enabled": bool(getattr(gen, "thinking", False))}}
 
 

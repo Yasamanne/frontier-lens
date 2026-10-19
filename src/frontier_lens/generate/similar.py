@@ -83,12 +83,17 @@ def _review_similar_question(
     try:
         payload = _extract_json(completion.text)
         score = max(0, min(100, int(payload.get("score", 0))))
+        scores = payload.get("criterion_scores", {})
+        raw_issues = payload.get("issues", [])
+        if isinstance(raw_issues, str):
+            raw_issues = [raw_issues]
+        issues = [str(i) for i in raw_issues] if isinstance(raw_issues, list) else []
         return {
             "score": score,
             # The code decides pass or fail from the score; the model's own flag is ignored.
             "passed": score >= REVIEW_PASS_SCORE,
-            "criterion_scores": payload.get("criterion_scores", {}),
-            "issues": payload.get("issues", []),
+            "criterion_scores": scores if isinstance(scores, dict) else {},
+            "issues": issues,
             "fix_instructions": payload.get("fix_instructions", ""),
         }
     except Exception as exc:
@@ -227,6 +232,50 @@ def _run_similar_agent(
     return candidate_id
 
 
+def _rescue_draft(
+    seed: dict,
+    item: dict,
+    *,
+    provider,
+    gen,
+    k: int,
+    max_hint_levels: int,
+    complete_fn=None,
+    run_id: str | None = None,
+    log_fn=None,
+) -> tuple[str, int, float, str] | None:
+    """Dead-zone rescue of a generated question the policy never solves.
+
+    *item* is the question: ``stem, key, numeric, code, lang, input_files, topic, band``.
+    Adds up to *max_hint_levels* progressive hints; the first level that lands in the band
+    is stored as a ``light_hint`` candidate. Returns ``(candidate id, level, pass rate,
+    hinted stem)`` or None if no level works. The seed's topic and band win over the
+    draft's, which are only a fallback when the seed has none.
+    """
+    def _log(event: str, **fields):
+        if log_fn:
+            log_fn(event, source_id=seed["id"], **fields)
+
+    ladder = hint_ladder(
+        item["stem"], item["key"], bool(item.get("numeric", True)),
+        provider=provider, gen=gen, k=k, max_hints=max_hint_levels,
+        failure_mode="never solved by the policy (a newly written question)",
+        hint_feedback=sme_feedback_for(seed.get("topic"), source_id=seed["id"], hints=True),
+        complete_fn=complete_fn, question_id=seed["id"], log_fn=_log,
+    )
+    if not ladder["rescued"]:
+        return None
+    cid = _store_hinted_candidate(
+        source_qid=seed["id"], hinted_stem=ladder["stem"], code=item["code"],
+        lang=item.get("lang") or "python", files=item.get("input_files") or {},
+        key=item["key"], numeric=bool(item.get("numeric", True)),
+        topic=seed.get("topic") or item.get("topic") or "",
+        band=seed.get("band") or item.get("band") or "",
+        gen_id=gen.id, stats=ladder["stats"], run_id=run_id,
+    )
+    return cid, ladder["level"], ladder["stats"]["pass_rate"], ladder["stem"]
+
+
 def generate_similar_questions(
     source_questions: list[dict],
     *,
@@ -235,6 +284,7 @@ def generate_similar_questions(
     complete_fn=None,
     log_fn=None,
     calibration_k: int | None = None,
+    max_hint_levels: int = 3,
 ) -> list[dict]:
     """For each RL-suitable source question generate n_each similar questions.
 
@@ -249,7 +299,8 @@ def generate_similar_questions(
 
     Each generated question is calibrated; if RL-suitable it is stored as
     ``status='pending'`` with ``generator_mode='similar_augment'`` so it
-    surfaces in the SME queue.
+    surfaces in the SME queue. One the policy never solves goes to the dead-zone rescue
+    (up to *max_hint_levels* hints) before it is given up on.
 
     Returns a list of result dicts::
 
@@ -333,6 +384,24 @@ def generate_similar_questions(
         status = row["status"] if row else "unknown"
         rate = row["policy_pass_rate"] if row else None
         reject_reason = row["auto_reject_reason"] if row else None
+        rescue_level: int | None = None
+
+        if (status == "auto_rejected" and reject_reason == "out_of_band"
+                and rate is not None and rate <= 0 and max_hint_levels > 0):
+            with engine.connect() as conn:
+                cand = conn.execute(
+                    text("SELECT stem, executed_key AS key, numeric, code, lang, "
+                         "input_files_json, topic, band FROM candidates WHERE id=:id"),
+                    {"id": cid},
+                ).mappings().first()
+            rescued = _rescue_draft(
+                q, {**dict(cand), "input_files": json.loads(cand["input_files_json"] or "{}")},
+                provider=provider, gen=gen, k=calibration_k or POLICY_K, run_id=run_id,
+                max_hint_levels=max_hint_levels, complete_fn=complete_fn, log_fn=_log,
+            ) if cand else None
+            if rescued:
+                cid, rescue_level, rate, _ = rescued
+                status, reject_reason = "pending", None
 
         _log(
             "similar_result",
@@ -341,6 +410,7 @@ def generate_similar_questions(
             status=status,
             pass_rate=rate,
             auto_reject_reason=reject_reason,
+            rescued_level=rescue_level,
         )
         return {
             "source_id": q["id"],
@@ -348,6 +418,7 @@ def generate_similar_questions(
             "status": status,
             "pass_rate": rate,
             "reason": reject_reason,
+            "rescued_level": rescue_level,
         }
 
     # Seeds/attempts are independent — run concurrently; events reach log_fn
@@ -759,7 +830,7 @@ def _prior_variants_for_seed(seed_id: str, limit: int = 6) -> list[str]:
                 """
                 SELECT stem FROM candidates
                 WHERE source_fail_ids LIKE :pat AND status IN ('pending', 'approved')
-                  AND generator_mode = 'similar_augment'
+                  AND generator_mode IN ('similar_augment', 'light_hint')
                 ORDER BY created_at DESC LIMIT :n
                 """
             ),
@@ -808,6 +879,8 @@ def _agent_draft(
             try:
                 args = json.loads(call.function.arguments or "{}")
             except json.JSONDecodeError:
+                args = {}
+            if not isinstance(args, dict):
                 args = {}
             name = call.function.name
             log_fn("agent_tool_call", step=step, tool=name,
@@ -859,11 +932,11 @@ def _agent_draft(
     return run_tool_calls(msg, max_loops + 1)
 
 
-def _policy_weakness_text(run_id: str | None, seed: dict) -> str:
+def _policy_weakness_text(run_id: str | None, seed: dict, model_id: str | None = None) -> str:
     """What the policy did on this seed and how it fails in the seed's cell, for the prompt."""
     if not run_id:
         return "(no evaluation data for this run)"
-    policy = policy_spec()
+    model_id = model_id or policy_spec().id
     lines: list[str] = []
     with get_engine().connect() as conn:
         rows = conn.execute(
@@ -871,7 +944,7 @@ def _policy_weakness_text(run_id: str | None, seed: dict) -> str:
                 "SELECT is_correct, parsed_answer, unparsable FROM attempts "
                 "WHERE run_id=:r AND model_id=:m AND question_id=:q"
             ),
-            {"r": run_id, "m": policy.id, "q": seed["id"]},
+            {"r": run_id, "m": model_id, "q": seed["id"]},
         ).mappings().all()
     if rows:
         wrong = Counter(
@@ -887,7 +960,7 @@ def _policy_weakness_text(run_id: str | None, seed: dict) -> str:
                 f"{ans} (x{n})" for ans, n in wrong.most_common(4)))
         if n_unparsable:
             lines.append(f"{n_unparsable} time(s) it gave no usable final answer.")
-    analysis = failure_modes(run_id, policy.id, seed.get("topic") or "", seed.get("band") or "")
+    analysis = failure_modes(run_id, model_id, seed.get("topic") or "", seed.get("band") or "")
     if analysis["n_failing_questions"] > 0:
         lines.append(failure_summary_text(analysis))
     return "\n".join(lines) or "(no data on this seed)"
@@ -946,6 +1019,7 @@ def generate_similar_react_review(
     max_fix_iterations: int = MAX_FIX_ITERATIONS,
     max_tune_rounds: int = 2,
     max_hint_levels: int = 3,
+    model_id: str | None = None,
     calibration_k: int | None = None,
     complete_fn=None,
     log_fn=None,
@@ -1022,7 +1096,7 @@ def generate_similar_react_review(
         seed_i, q = item
         sme_feedback = sme_feedback_for(q.get("topic"), source_id=q["id"])
         prior_stems = _prior_variants_for_seed(q["id"])
-        policy_weakness = _policy_weakness_text(run_id, q)
+        policy_weakness = _policy_weakness_text(run_id, q, model_id)
 
         def _run_variant(attempt: int) -> dict:
             idx = seed_i * n_each + attempt + 1
@@ -1139,25 +1213,16 @@ def generate_similar_react_review(
 
             def rescue(draft: dict, stats: dict, key: str) -> tuple | None:
                 """Dead-zone rescue of a draft the policy never solves; None if no hint level works."""
-                ladder = hint_ladder(
-                    draft["stem"], key, bool(draft.get("numeric", True)),
-                    provider=gen_provider, gen=gen, k=k, max_hints=max_hint_levels,
-                    failure_mode="never solved by the policy (a newly written question)",
-                    hint_feedback=sme_feedback_for(q.get("topic"), source_id=q["id"], hints=True),
-                    complete_fn=complete_fn, question_id=q["id"],
-                    log_fn=lambda e, **f: _log(e, source_id=q["id"], **f),
+                rescued = _rescue_draft(
+                    q, {**draft, "key": key}, provider=gen_provider, gen=gen, k=k,
+                    max_hint_levels=max_hint_levels, complete_fn=complete_fn,
+                    run_id=run_id, log_fn=_log,
                 )
-                if not ladder["rescued"]:
+                if not rescued:
                     return None
-                cid = _store_hinted_candidate(
-                    source_qid=q["id"], hinted_stem=ladder["stem"], code=draft["code"],
-                    lang=draft.get("lang") or "python", files=draft.get("input_files") or {},
-                    key=key, numeric=bool(draft.get("numeric", True)),
-                    topic=q["topic"], band=q["band"], gen_id=gen.id,
-                    stats=ladder["stats"], run_id=run_id,
-                )
-                prior_stems.append(ladder["stem"][:300])
-                return cid, "pending", ladder["stats"]["pass_rate"], None, ladder["level"]
+                cid, level, rate, hinted_stem = rescued
+                prior_stems.append(hinted_stem[:300])
+                return cid, "pending", rate, None, level
 
             def finish(draft: dict, stats: dict, key: str) -> tuple:
                 """(candidate id, status, pass rate, reject reason, rescue level) of the final draft."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from sqlalchemy import text
 
@@ -212,4 +213,6 @@ def handle(name: str, args: dict, **kwargs) -> str:
     try:
         return _dispatch(name, args, **kwargs)
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        # Most often the model's arguments; the traceback is kept in case it is a real bug.
+        logging.getLogger(__name__).warning("tool %s failed", name, exc_info=True)
         return json.dumps({"error": f"bad arguments for {name}: {type(exc).__name__}: {exc}"})

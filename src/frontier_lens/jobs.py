@@ -343,7 +343,8 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
                 seeds, max_loops=cfg["max_loops"],
                 max_fix_iterations=cfg["max_fix_iterations"],
                 max_tune_rounds=cfg.get("max_tune_rounds", 2),
-                max_hint_levels=cfg.get("max_hint_levels", 3), **common,
+                max_hint_levels=cfg.get("max_hint_levels", 3),
+                model_id=cfg.get("model_id"), **common,
             )
         elif cfg["mode"] == "review":
             generate_similar_with_review(
@@ -352,7 +353,8 @@ def _run_augment(job_id: str, cfg: dict, res: _Results) -> None:
         elif cfg["mode"] == "react":
             generate_similar_react(seeds, max_loops=cfg["max_loops"], **common)
         else:
-            generate_similar_questions(seeds, **common)
+            generate_similar_questions(
+                seeds, max_hint_levels=cfg.get("max_hint_levels", 3), **common)
 
 
 def _run_calibrate(job_id: str, cfg: dict, res: _Results) -> None:
