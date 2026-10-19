@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from frontier_lens import db
@@ -14,3 +16,10 @@ def isolated_db(tmp_path, monkeypatch):
     yield
     if db._engine is not None:
         db._engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def fake_api_key(monkeypatch):
+    """Clients are built before a test's stub takes over; CI has no real key and needs none."""
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-used")
