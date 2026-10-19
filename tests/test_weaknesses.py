@@ -123,3 +123,69 @@ def test_weakest_cell_prefers_confirmed_weak_cells_and_skips_tiny_ones():
             _attempts(conn, "r", f"s{i}", ["4"] * 4)
     cell = weakest_cell("r", M)
     assert (cell.topic, cell.n, cell.weak) == ("weak", 8, True)
+
+
+# ── pooling scope: selected run + completed runs, one dataset ───────────
+
+def _dq(conn, qid, source="uploaded", filename="a.csv"):
+    conn.execute(
+        text(
+            """
+            INSERT INTO questions (id, topic, level, band, split, template, params_json, stem,
+                code, lang, input_files_json, key, numeric, source, upload_filename)
+            VALUES (:id, 't', 2, 'standard', 'train', 't', '{}', 'stem', '', 'python', '{}',
+                    '4', 1, :src, :fn)
+            """
+        ),
+        {"id": qid, "src": source, "fn": filename},
+    )
+
+
+def _scoped_ids(scope, dataset=None):
+    return sorted(i["id"] for i in policy_item_rates(scope, M, dataset=dataset))
+
+
+def test_pooling_always_includes_the_selected_run_even_if_it_is_not_complete():
+    from frontier_lens.scope import pool_with
+
+    engine = get_engine()
+    _run("done_a")                          # complete, file a.csv
+    _run("partial", status="interrupted")   # the run the user is looking at, file a.csv
+    _run("other_partial", status="failed")  # another incomplete run: must stay out
+    with engine.begin() as conn:
+        for qid in ("a1", "a2", "p1", "o1"):
+            _dq(conn, qid)
+        _attempts(conn, "done_a", "a1", ["4"])
+        _attempts(conn, "done_a", "a2", ["4"])
+        _attempts(conn, "partial", "p1", ["4"])
+        _attempts(conn, "other_partial", "o1", ["4"])
+    assert _scoped_ids("partial") == ["p1"]
+    # Pooled is never smaller than the run itself: it adds the completed run, not the other partial one.
+    assert _scoped_ids(pool_with("partial")) == ["a1", "a2", "p1"]
+
+
+def test_pooling_one_dataset_leaves_other_datasets_out():
+    from frontier_lens.scope import DATASET_BUILTIN, pool_with
+
+    engine = get_engine()
+    _run("ra")
+    _run("rb")
+    _run("rs")
+    _run("sel", status="interrupted")
+    with engine.begin() as conn:
+        _dq(conn, "qa", filename="a.csv")
+        _dq(conn, "qb", filename="b.csv")
+        _dq(conn, "qs", source="seed", filename="")
+        _dq(conn, "qsel", filename="a.csv")
+        _attempts(conn, "ra", "qa", ["4"])
+        _attempts(conn, "rb", "qb", ["4"])
+        _attempts(conn, "rs", "qs", ["4"])
+        _attempts(conn, "sel", "qsel", ["4"])
+    scope = pool_with("sel")
+    assert _scoped_ids(scope) == ["qa", "qb", "qs", "qsel"]
+    assert _scoped_ids(scope, dataset="a.csv") == ["qa", "qsel"]
+    assert _scoped_ids(scope, dataset="b.csv") == ["qb"]
+    assert _scoped_ids(scope, dataset=DATASET_BUILTIN) == ["qs"]
+    # Heatmap and failure analysis take the same scope and dataset.
+    assert heatmap(scope, M, dataset="b.csv")[0].n == 1
+    assert failure_modes(scope, M, "t", "standard", dataset="a.csv")["n_failing_questions"] == 0

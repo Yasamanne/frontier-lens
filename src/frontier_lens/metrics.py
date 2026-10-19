@@ -6,7 +6,7 @@ from collections import defaultdict
 from sqlalchemy import text
 
 from frontier_lens.db import get_engine
-from frontier_lens.scope import NOT_BROKEN, run_clause
+from frontier_lens.scope import NOT_BROKEN, dataset_clause, run_clause
 from frontier_lens.stats import headroom, in_learnable_band, pass_at_k, pass_rate, wilson_interval
 
 
@@ -52,15 +52,18 @@ def junk_by_mode() -> dict:
     return dict(out)
 
 
-def policy_item_rates(run_id: str, model_id: str, split: str | None = "train") -> list[dict]:
+def policy_item_rates(
+    run_id: str, model_id: str, split: str | None = "train", dataset: str | None = None
+) -> list[dict]:
     engine = get_engine()
     with engine.connect() as conn:
         sql = f"""
             SELECT q.id, q.template, q.source, q.generator_mode, q.split, a.is_correct
             FROM attempts a JOIN questions q ON q.id=a.question_id
             WHERE {run_clause("r")} AND a.model_id=:m AND {NOT_BROKEN}
+              AND {dataset_clause("ds")}
         """
-        params: dict = {"r": run_id, "m": model_id}
+        params: dict = {"r": run_id, "m": model_id, "ds": dataset}
         if split:
             sql += " AND q.split=:split"
             params["split"] = split
