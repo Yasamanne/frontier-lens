@@ -11,6 +11,7 @@ if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
         if _name == "frontier_lens" or _name.startswith("frontier_lens."):
             del sys.modules[_name]
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -172,9 +173,22 @@ st.subheader("Policy pass-rate histogram")
 items = policy_item_rates(run_id, model_id, split="train", dataset=dataset)
 if items:
     counts = histogram_counts([it["pass_rate"] for it in items])
-    # sort=False keeps the bars in pass-rate order; the default sorts the labels
-    # alphabetically, which scatters the fractions and puts "1 (out)" near the start.
-    st.bar_chart(pd.DataFrame({"n": counts}, index=HIST_LABELS), sort=False)
+    # Explicit sort keeps the bars in pass-rate order (the default sorts the labels
+    # alphabetically); large horizontal tick labels keep the fractions readable.
+    _hist = pd.DataFrame({"pass rate": HIST_LABELS, "items": counts})
+    _hist["in band"] = ~_hist["pass rate"].str.contains("out")
+    st.altair_chart(
+        alt.Chart(_hist).mark_bar().encode(
+            x=alt.X("pass rate:N", sort=list(HIST_LABELS), title=None,
+                    axis=alt.Axis(labelAngle=0, labelFontSize=15, labelLimit=0)),
+            y=alt.Y("items:Q", title="items", axis=alt.Axis(labelFontSize=13, titleFontSize=13,
+                                                            tickMinStep=1)),
+            color=alt.Color("in band:N", legend=None,
+                            scale=alt.Scale(domain=[True, False], range=["#FF6B2B", "#6B6B8A"])),
+            tooltip=["pass rate", "items"],
+        ),
+        width="stretch",
+    )
     in_band = sum(1 for i in items if i["in_band"])
     st.caption(
         "Learnable band is the open interval **0 < pass_rate < 1** "
