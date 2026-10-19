@@ -260,7 +260,8 @@ From the local database (Oct 15–17, 36 evaluation runs with samples, 700 grade
 5. Use a judge from a different model family, and measure judge–SME agreement.
 6. Add container isolation for the sandbox, Postgres, authentication and a job queue for multi-user use.
 7. **Seeds are a research area of their own.** Which seeds, how many, and how their difficulty is set decide what the generator can produce at the learnable band. Better seed selection is a follow-up study.
-8. **Other data formats.** Measuring a policy, finding the learnable band, and generating or rescuing questions is the core idea here, built for question-and-answer data. The same idea should apply to Harbor-format tasks.
+8. **Deeper failure analysis.** Failure modes today are coarse (format, off-by-one, hedging, consistent-wrong, high-variance). A finer analysis would score responses against rubrics and compare the reasoning of correct samples with that of failed samples on the same question, to find where the reasoning diverges. Those findings could be fed to the generator so new questions target the policy's specific reasoning gaps.
+9. **Other data formats.** Measuring a policy, finding the learnable band, and generating or rescuing questions is the core idea here, built for question-and-answer data. The same idea should apply to Harbor-format tasks.
 
 ## Tools used, including AI
 
