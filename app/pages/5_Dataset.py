@@ -11,6 +11,8 @@ if os.environ.get("FRONTIER_LENS_DEV_RELOAD") == "1":
         if _name == "frontier_lens" or _name.startswith("frontier_lens."):
             del sys.modules[_name]
 
+import csv as _csv
+import io as _io
 import json
 
 import streamlit as st
@@ -135,7 +137,6 @@ with tab_rl:
             width="stretch",
         )
         # CSV download
-        import csv as _csv, io as _io
         out = _io.StringIO()
         writer = _csv.DictWriter(out, fieldnames=["id","topic","band","stem","key","n_correct","n","content_pass_rate"])
         writer.writeheader()
